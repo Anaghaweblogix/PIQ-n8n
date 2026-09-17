@@ -16,6 +16,7 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          path_to_bun_executable: 'C:\Users\Anagha\.bun\bin\bun.exe'
           prompt: |
             Read the diff for ${{ github.sha }} against its first parent.
             Write /tmp/summary.json with keys: commit, jira_keys (from branch or

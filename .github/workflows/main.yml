@@ -240,6 +240,16 @@ jobs:
           Write-Host "Total tokens : $totalTokens"
           Write-Host "================================"
 
+          @{
+            input_tokens = $inputTokens
+            output_tokens = $outputTokens
+            total_tokens = $totalTokens
+          } | ConvertTo-Json | Out-File `
+            "$env:GITHUB_WORKSPACE\token_usage.json" `
+            -Encoding utf8
+          
+          Write-Host "Token usage saved."
+          
           $text = ($response.content | Where-Object {
             $_.type -eq "text"
           }).text
@@ -276,3 +286,66 @@ jobs:
             commit_diff.txt
             commit_info.json
           retention-days: 90
+          
+      # 5. Send complete analysis to n8n
+      - name: Send analysis to n8n
+        shell: powershell -ExecutionPolicy Bypass -Command ". '{0}'"
+        env:
+          N8N_WEBHOOK_URL: ${{ secrets.N8N_WEBHOOK_URL }}
+        run: |
+
+          Write-Host "Preparing data for n8n..."
+
+          # Read Claude analysis
+          $summary = Get-Content `
+            "$env:GITHUB_WORKSPACE\summary.json" `
+            -Raw | ConvertFrom-Json
+
+          # Read commit information
+          $commitInfo = Get-Content `
+            "$env:GITHUB_WORKSPACE\commit_info.json" `
+            -Raw | ConvertFrom-Json
+
+          # Read Git diff
+          $diff = Get-Content `
+            "$env:GITHUB_WORKSPACE\commit_diff.txt" `
+            -Raw
+
+          # Read token usage
+          $tokenUsage = Get-Content `
+            "$env:GITHUB_WORKSPACE\token_usage.json" `
+            -Raw | ConvertFrom-Json
+
+          # Build payload
+          $payload = @{
+            repository = "${{ github.repository }}"
+            workflow = "${{ github.workflow }}"
+            run_id = "${{ github.run_id }}"
+            run_number = "${{ github.run_number }}"
+
+            commit = "${{ github.sha }}"
+            branch = "${{ github.ref_name }}"
+
+            commit_info = $commitInfo
+
+            analysis = $summary
+
+            git_diff = $diff
+
+            token_usage = $tokenUsage
+          }
+
+          # Convert payload to JSON
+          $json = $payload | ConvertTo-Json -Depth 30
+
+          Write-Host "Sending data to n8n..."
+
+          $result = Invoke-RestMethod `
+            -Uri $env:N8N_WEBHOOK_URL `
+            -Method Post `
+            -ContentType "application/json" `
+            -Body $json
+
+          Write-Host "================================"
+          Write-Host "Data successfully sent to n8n"
+          Write-Host "================================"

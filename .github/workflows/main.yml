@@ -1,37 +1,266 @@
 name: Functional Summary
+
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+
+permissions:
+  contents: read
+
 jobs:
   summarize:
     runs-on: self-hosted
     timeout-minutes: 15
-    permissions:
-      contents: read
-      id-token: write
+
     steps:
-      - uses: actions/checkout@v6
+
+      # 1. Checkout repository
+      - name: Checkout repository
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - uses: anthropics/claude-code-action@v1
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          path_to_bun_executable: 'C:\Users\Anagha\.bun\bin\bun.exe'
-          prompt: |
-            Read the diff for ${{ github.sha }} against its first parent.
-            Write /tmp/summary.json with keys: commit, jira_keys (from branch or
-            commit message), audience_summary (3-5 sentences, plain business
-            language, what a user or auditor would notice), modules_touched,
-            api_contract_changes, db_migrations, config_or_env_changes,
-            breaking_changes, ewi_impact.
-            Describe behaviour change, not file names. If nothing user-visible
-            changed, say so plainly rather than padding.
-          claude_args: |
-            --model claude-sonnet-5
-            --max-turns 15
-            --allowedTools "Bash(git diff:*),Bash(git log:*),Bash(git show:*),Read,Grep,Glob,Write"
-      - uses: actions/upload-artifact@v4
+
+      # 2. Get commit information and diff
+      - name: Prepare commit analysis
+        shell: powershell
+        run: |
+          $commit = "${{ github.sha }}"
+          $parent = git rev-parse "${commit}^"
+
+          Write-Host "Commit: $commit"
+          Write-Host "Parent: $parent"
+
+          $message = git log -1 --pretty=%B $commit
+          $branch = "${{ github.ref_name }}"
+
+          $diff = git diff --no-ext-diff --unified=80 $parent $commit
+
+          $diff | Out-File `
+            -FilePath "$env:GITHUB_WORKSPACE\commit_diff.txt" `
+            -Encoding utf8
+
+          @{
+            commit = $commit
+            parent = $parent
+            branch = $branch
+            message = $message
+          } | ConvertTo-Json | Out-File `
+            "$env:GITHUB_WORKSPACE\commit_info.json" `
+            -Encoding utf8
+
+          Write-Host "Commit message:"
+          Write-Host $message
+
+          Write-Host "Diff saved."
+
+      # 3. Analyze with Anthropic API
+      - name: Analyze commit with Claude
+        shell: powershell
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+
+          $commit = "${{ github.sha }}"
+          $branch = "${{ github.ref_name }}"
+          $parent = git rev-parse "${commit}^"
+
+          $commitMessage = git log -1 --pretty=%B $commit
+
+          $diff = Get-Content `
+            "$env:GITHUB_WORKSPACE\commit_diff.txt" `
+            -Raw
+
+          $prompt = @"
+          You are analyzing a software repository commit.
+
+          Analyze ONLY the supplied commit information and git diff.
+          Do not invent functionality that is not supported by the diff.
+
+          COMMIT:
+          $commit
+
+          PARENT:
+          $parent
+
+          BRANCH:
+          $branch
+
+          COMMIT MESSAGE:
+          $commitMessage
+
+          ================================
+          GIT DIFF
+          ================================
+
+          $diff
+
+          ================================
+          REQUIRED OUTPUT
+          ================================
+
+          Return ONLY valid JSON.
+
+          Use exactly this structure:
+
+          {
+            "commit": "",
+            "jira_keys": [],
+            "audience_summary": "",
+            "modules_touched": [],
+            "files_added": [],
+            "files_modified": [],
+            "files_deleted": [],
+            "functions_changed": [],
+            "classes_changed": [],
+            "imports_changed": [],
+            "api_contract_changes": [],
+            "db_migrations": [],
+            "config_or_env_changes": [],
+            "breaking_changes": [],
+            "features_added": [],
+            "behaviour_changes": [],
+            "dependencies_affected": [],
+            "tests_changed": [],
+            "ewi_impact": "",
+            "jira_work_evidence": []
+          }
+
+          RULES:
+
+          1. jira_keys
+             Extract Jira keys from the branch name and commit message.
+
+          2. audience_summary
+             Give 3-5 sentences explaining what changed in normal
+             business language.
+
+          3. modules_touched
+             Identify logical modules/components affected.
+
+          4. files_added
+             List files newly added.
+
+          5. files_modified
+             List files modified.
+
+          6. files_deleted
+             List files deleted.
+
+          7. functions_changed
+             Identify functions added, removed or modified.
+
+          8. classes_changed
+             Identify classes added, removed or modified.
+
+          9. imports_changed
+             Identify important imports added or removed.
+
+          10. api_contract_changes
+              Identify API endpoints, parameters or request/response
+              structures that changed.
+
+          11. db_migrations
+              Identify database schema or migration changes.
+
+          12. config_or_env_changes
+              Identify configuration and environment changes.
+
+          13. breaking_changes
+              Identify compatibility-breaking changes.
+
+          14. features_added
+              Describe actual features introduced.
+
+          15. behaviour_changes
+              Describe how application behaviour changed.
+
+          16. dependencies_affected
+              Explain how changed code affects other parts of the
+              application.
+
+          17. tests_changed
+              Identify tests added, modified or removed.
+
+          18. ewi_impact
+              Explain whether this appears to affect an Electronic
+              Work Instruction or related workflow.
+
+              If there is no evidence, return:
+              "No EWI impact identified."
+
+          19. jira_work_evidence
+              For each detected Jira key, explain what work in this
+              commit provides evidence for that Jira ticket.
+
+              Do not claim the entire Jira ticket is completed unless
+              the diff provides evidence.
+
+          If a category has no relevant changes, return [].
+
+          RETURN ONLY JSON.
+          "@
+
+          # Build API request
+
+          $body = @{
+            model = "claude-sonnet-5"
+            max_tokens = 12000
+            messages = @(
+              @{
+                role = "user"
+                content = $prompt
+              }
+            )
+          } | ConvertTo-Json -Depth 10
+
+          Write-Host "Sending commit to Anthropic..."
+
+          $response = Invoke-RestMethod `
+            -Uri "https://api.anthropic.com/v1/messages" `
+            -Method Post `
+            -Headers @{
+              "x-api-key" = $env:ANTHROPIC_API_KEY
+              "anthropic-version" = "2023-06-01"
+              "content-type" = "application/json"
+            } `
+            -Body $body
+
+          Write-Host "Claude response received."
+
+          $text = ($response.content | Where-Object {
+            $_.type -eq "text"
+          }).text
+
+          if (-not $text) {
+            throw "Claude returned an empty response."
+          }
+
+          $text = $text.Trim()
+
+          # Remove Markdown JSON fences if present
+          $text = $text -replace '^```json\s*', ''
+          $text = $text -replace '^```\s*', ''
+          $text = $text -replace '\s*```$', ''
+
+          $text | Out-File `
+            -FilePath "$env:GITHUB_WORKSPACE\summary.json" `
+            -Encoding utf8
+
+          # Validate JSON
+          Get-Content `
+            "$env:GITHUB_WORKSPACE\summary.json" `
+            -Raw | ConvertFrom-Json | Out-Null
+
+          Write-Host "summary.json is valid JSON."
+
+      # 4. Upload results
+      - name: Upload analysis
+        uses: actions/upload-artifact@v4
         with:
           name: functional-summary-${{ github.sha }}
-          path: /tmp/summary.json
+          path: |
+            summary.json
+            commit_diff.txt
+            commit_info.json
           retention-days: 90

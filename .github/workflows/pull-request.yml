@@ -1,0 +1,326 @@
+name: Pull Request Analysis
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+jobs:
+  analyze-pr:
+    runs-on: self-hosted
+
+    steps:
+      # --------------------------------------------------
+      # 1. Checkout the PR HEAD
+      # --------------------------------------------------
+      - name: Checkout PR
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      # --------------------------------------------------
+      # 2. Prepare PR information
+      # --------------------------------------------------
+      - name: Prepare PR data
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "========================================="
+          Write-Host "        PULL REQUEST ANALYSIS"
+          Write-Host "========================================="
+
+          $prNumber = "${{ github.event.pull_request.number }}"
+          $prTitle = "${{ github.event.pull_request.title }}"
+          $prAuthor = "${{ github.event.pull_request.user.login }}"
+          $baseBranch = "${{ github.event.pull_request.base.ref }}"
+          $headBranch = "${{ github.event.pull_request.head.ref }}"
+          $baseSha = "${{ github.event.pull_request.base.sha }}"
+          $headSha = "${{ github.event.pull_request.head.sha }}"
+          $repository = "${{ github.repository }}"
+
+          $prBody = @'
+          ${{ github.event.pull_request.body }}
+          '@
+
+          Write-Host "PR Number: $prNumber"
+          Write-Host "PR Title: $prTitle"
+          Write-Host "Author: $prAuthor"
+          Write-Host "Base: $baseBranch"
+          Write-Host "Head: $headBranch"
+          Write-Host "Base SHA: $baseSha"
+          Write-Host "Head SHA: $headSha"
+
+          # Make sure the base commit exists locally
+          git fetch origin $baseSha --depth=1
+
+          # ---------------------------------------------
+          # Complete PR diff
+          # ---------------------------------------------
+          $diff = git diff --no-ext-diff --unified=60 $baseSha $headSha
+
+          # ---------------------------------------------
+          # Changed files
+          # ---------------------------------------------
+          $changedFiles = git diff --name-status $baseSha $headSha
+
+          # ---------------------------------------------
+          # Commit history inside PR
+          # ---------------------------------------------
+          $commitLog = git log --format="%H%n%s%n%b%n---COMMIT---" "$baseSha..$headSha"
+
+          # ---------------------------------------------
+          # Statistics
+          # ---------------------------------------------
+          $stat = git diff --stat $baseSha $headSha
+
+          $prInfo = [ordered]@{
+              repository = $repository
+              pr_number = [int]$prNumber
+              title = $prTitle
+              author = $prAuthor
+              base_branch = $baseBranch
+              head_branch = $headBranch
+              base_sha = $baseSha
+              head_sha = $headSha
+              body = $prBody.Trim()
+              changed_files = $changedFiles
+              commit_history = $commitLog
+              diff_stat = $stat
+          }
+
+          $prInfo | ConvertTo-Json -Depth 20 | Set-Content -Path "pr_info.json" -Encoding UTF8
+
+          $diff | Set-Content -Path "pr_diff.txt" -Encoding UTF8
+
+          Write-Host ""
+          Write-Host "Changed files:"
+          Write-Host $changedFiles
+
+          Write-Host ""
+          Write-Host "Diff characters: $($diff.Length)"
+          Write-Host "PR information saved."
+
+      # --------------------------------------------------
+      # 3. Analyze PR using Claude
+      # --------------------------------------------------
+      - name: Analyze PR with Claude
+        shell: powershell
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "========================================="
+          Write-Host "       CLAUDE PR ANALYSIS"
+          Write-Host "========================================="
+
+          $prInfo = Get-Content "pr_info.json" -Raw
+          $diff = Get-Content "pr_diff.txt" -Raw
+
+          $prompt = @"
+          You are analyzing a GitHub Pull Request.
+
+          Your job is to determine what this PR actually changes based ONLY on:
+          1. Pull Request metadata
+          2. Changed files
+          3. Commit history
+          4. Git diff
+
+          Do not invent functionality that is not evidenced by the diff.
+
+          Analyze:
+
+          - What the PR does overall
+          - Which modules/components are affected
+          - Files added, modified and deleted
+          - Functions changed
+          - Classes changed
+          - Imports/dependencies changed
+          - API contract changes
+          - Database/schema/migration changes
+          - Configuration/environment changes
+          - Features added
+          - Behaviour changes
+          - Breaking changes
+          - Tests added/modified/removed
+          - Jira ticket keys mentioned in PR metadata, commit messages or code
+          - Evidence showing which Jira work is actually implemented
+          - Overall impact on the application
+          - EWI impact if applicable
+
+          IMPORTANT:
+          - Distinguish actual evidence from assumptions.
+          - Do not claim a feature exists merely because a variable or file name suggests it.
+          - If something cannot be determined from the diff, return an empty array or state that it could not be determined.
+          - Return ONLY valid JSON.
+          - Do not wrap the JSON in markdown code fences.
+
+          Return exactly this structure:
+
+          {
+            "jira_keys": [],
+            "summary": "",
+            "modules_touched": [],
+            "files_added": [],
+            "files_modified": [],
+            "files_deleted": [],
+            "functions_changed": [],
+            "classes_changed": [],
+            "imports_changed": [],
+            "api_contract_changes": [],
+            "database_changes": [],
+            "config_or_env_changes": [],
+            "features_added": [],
+            "behaviour_changes": [],
+            "breaking_changes": [],
+            "tests_changed": [],
+            "jira_work_evidence": [],
+            "overall_impact": "",
+            "ewi_impact": ""
+          }
+
+          <pull_request>
+          $prInfo
+          </pull_request>
+
+          <git_diff>
+          $diff
+          </git_diff>
+          "@
+
+          $body = @{
+              model = "claude-sonnet-5"
+              max_tokens = 12000
+              messages = @(
+                  @{
+                      role = "user"
+                      content = $prompt
+                  }
+              )
+          } | ConvertTo-Json -Depth 20
+
+          Write-Host "Sending request to Anthropic..."
+
+          $response = Invoke-RestMethod `
+              -Uri "https://api.anthropic.com/v1/messages" `
+              -Method Post `
+              -Headers @{
+                  "x-api-key" = $env:ANTHROPIC_API_KEY
+                  "anthropic-version" = "2023-06-01"
+                  "content-type" = "application/json"
+              } `
+              -Body $body
+
+          $analysisText = $response.content[0].text.Trim()
+
+          # Remove accidental markdown fences if Claude returns them
+          $analysisText = $analysisText -replace '^```json\s*', ''
+          $analysisText = $analysisText -replace '^```\s*', ''
+          $analysisText = $analysisText -replace '\s*```$', ''
+          $analysisText = $analysisText.Trim()
+
+          # Validate JSON
+          $analysis = $analysisText | ConvertFrom-Json
+
+          # Save analysis
+          $analysisText | Set-Content -Path "summary.json" -Encoding UTF8
+
+          # Token usage
+          $inputTokens = [int]$response.usage.input_tokens
+          $outputTokens = [int]$response.usage.output_tokens
+          $totalTokens = $inputTokens + $outputTokens
+
+          $tokenUsage = [ordered]@{
+              input_tokens = $inputTokens
+              output_tokens = $outputTokens
+              total_tokens = $totalTokens
+          }
+
+          $tokenUsage | ConvertTo-Json | Set-Content -Path "token_usage.json" -Encoding UTF8
+
+          Write-Host ""
+          Write-Host "Analysis completed."
+          Write-Host "Input tokens: $inputTokens"
+          Write-Host "Output tokens: $outputTokens"
+          Write-Host "Total tokens: $totalTokens"
+
+      # --------------------------------------------------
+      # 4. Send PR analysis to n8n
+      # --------------------------------------------------
+      - name: Send PR analysis to n8n
+        shell: powershell
+        env:
+          N8N_PR_WEBHOOK_URL: ${{ secrets.N8N_PR_WEBHOOK_URL }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "========================================="
+          Write-Host "          SEND DATA TO N8N"
+          Write-Host "========================================="
+
+          $prInfoJson = Get-Content "pr_info.json" -Raw
+          $analysisJson = Get-Content "summary.json" -Raw
+          $tokenUsageJson = Get-Content "token_usage.json" -Raw
+          $diff = Get-Content "pr_diff.txt" -Raw
+
+          # Validate source JSON
+          $prInfoJson | ConvertFrom-Json | Out-Null
+          $analysisJson | ConvertFrom-Json | Out-Null
+          $tokenUsageJson | ConvertFrom-Json | Out-Null
+
+          # Safely convert diff into a JSON string
+          $diffJson = $diff | ConvertTo-Json -Compress
+
+          $repositoryJson = "${{ github.repository }}" | ConvertTo-Json -Compress
+          $workflowJson = "${{ github.workflow }}" | ConvertTo-Json -Compress
+          $runIdJson = "${{ github.run_id }}" | ConvertTo-Json -Compress
+          $runNumberJson = "${{ github.run_number }}" | ConvertTo-Json -Compress
+          $prNumberJson = "${{ github.event.pull_request.number }}" | ConvertTo-Json -Compress
+          $eventActionJson = "${{ github.event.action }}" | ConvertTo-Json -Compress
+
+          $json = @"
+          {
+            "repository": $repositoryJson,
+            "workflow": $workflowJson,
+            "run_id": $runIdJson,
+            "run_number": $runNumberJson,
+            "event_action": $eventActionJson,
+            "pr_number": $prNumberJson,
+            "pr_info": $prInfoJson,
+            "analysis": $analysisJson,
+            "git_diff": $diffJson,
+            "token_usage": $tokenUsageJson
+          }
+          "@
+
+          # Validate final JSON
+          $json | ConvertFrom-Json | Out-Null
+
+          Write-Host "JSON payload validated."
+
+          Invoke-RestMethod `
+              -Uri $env:N8N_PR_WEBHOOK_URL `
+              -Method Post `
+              -ContentType "application/json" `
+              -Body $json
+
+          Write-Host "PR analysis successfully sent to n8n."
+
+      # --------------------------------------------------
+      # 5. Upload artifacts
+      # --------------------------------------------------
+      - name: Upload PR analysis artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: pr-analysis-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: |
+            pr_info.json
+            pr_diff.txt
+            summary.json
+            token_usage.json

@@ -345,7 +345,8 @@ jobs:
             -Method Post `
             -ContentType "application/json" `
             -Body $json
-
+            -TimeoutSec 30
+            
           Write-Host "================================"
           Write-Host "Data successfully sent to n8n"
           Write-Host "================================"

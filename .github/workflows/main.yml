@@ -227,6 +227,18 @@ jobs:
             -Body $body
 
           Write-Host "Claude response received."
+          
+          # Token usage
+          $inputTokens = $response.usage.input_tokens
+          $outputTokens = $response.usage.output_tokens
+          $totalTokens = $inputTokens + $outputTokens
+          
+          Write-Host "================================"
+          Write-Host "CLAUDE TOKEN USAGE"
+          Write-Host "Input tokens : $inputTokens"
+          Write-Host "Output tokens: $outputTokens"
+          Write-Host "Total tokens : $totalTokens"
+          Write-Host "================================"
 
           $text = ($response.content | Where-Object {
             $_.type -eq "text"

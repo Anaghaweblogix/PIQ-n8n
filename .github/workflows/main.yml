@@ -132,7 +132,7 @@ jobs:
              Extract Jira keys from the branch name and commit message.
 
           2. audience_summary
-             Give 3-5 sentences explaining what changed in normal
+             Give detailed 9 to 10 sentences explaining what changed in normal
              business language.
 
           3. modules_touched

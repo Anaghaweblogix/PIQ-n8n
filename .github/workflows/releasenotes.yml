@@ -498,7 +498,7 @@ jobs:
           Write-Host "Pull request data saved."
 
 
-      # ============================================================
+            # ============================================================
       # 10. BUILD RELEASE CONTEXT
       # ============================================================
 
@@ -514,7 +514,7 @@ jobs:
           $to = "${{ steps.git_range.outputs.to }}"
 
           # --------------------------------------------------------
-          # COMMITS
+          # Read Git information
           # --------------------------------------------------------
 
           Write-Host "Loading commits..."
@@ -523,12 +523,8 @@ jobs:
             "$env:GITHUB_WORKSPACE\commits.txt" `
             -Raw
 
-          Write-Host "Commits loaded."
+          Write-Host "Commits loaded: $($commits.Length) characters"
 
-
-          # --------------------------------------------------------
-          # CHANGED FILES
-          # --------------------------------------------------------
 
           Write-Host "Loading changed files..."
 
@@ -536,12 +532,8 @@ jobs:
             "$env:GITHUB_WORKSPACE\changed_files.txt" `
             -Raw
 
-          Write-Host "Changed files loaded."
+          Write-Host "Changed files loaded: $($changedFiles.Length) characters"
 
-
-          # --------------------------------------------------------
-          # FILE STATISTICS
-          # --------------------------------------------------------
 
           Write-Host "Loading file statistics..."
 
@@ -549,97 +541,117 @@ jobs:
             "$env:GITHUB_WORKSPACE\file_statistics.txt" `
             -Raw
 
-          Write-Host "File statistics loaded."
+          Write-Host "File statistics loaded: $($fileStatistics.Length) characters"
 
-
-          # --------------------------------------------------------
-          # PULL REQUESTS
-          # --------------------------------------------------------
 
           Write-Host "Loading pull requests..."
 
           $pullRequests = Get-Content `
             "$env:GITHUB_WORKSPACE\pull_requests.json" `
-            -Raw |
-            ConvertFrom-Json
+            -Raw
 
-          Write-Host "Pull requests loaded."
+          Write-Host "Pull requests loaded: $($pullRequests.Length) characters"
 
-
-          # --------------------------------------------------------
-          # WORK ITEMS
-          # --------------------------------------------------------
 
           Write-Host "Loading work items..."
 
           $workItems = Get-Content `
             "$env:GITHUB_WORKSPACE\work_items.json" `
-            -Raw |
-            ConvertFrom-Json
+            -Raw
 
-          Write-Host "Work items loaded."
-
-
-          # --------------------------------------------------------
-          # BUILD LIGHTWEIGHT CONTEXT
-          # --------------------------------------------------------
-
-          Write-Host "Creating lightweight release context..."
-
-          $releaseContext = [ordered]@{
-
-              repository = "${{ github.repository }}"
-
-              branch = "${{ github.ref_name }}"
-
-              target_ref = "${{ inputs.target_ref }}"
-
-              release_name = "${{ inputs.release_name }}"
-
-              range_type = "${{ inputs.range_type }}"
-
-              range = [ordered]@{
-                  from = $from
-                  to = $to
-              }
-
-              commits = $commits
-
-              pull_requests = $pullRequests
-
-              changed_files = $changedFiles
-
-              file_statistics = $fileStatistics
-
-              work_items = $workItems
-          }
+          Write-Host "Work items loaded: $($workItems.Length) characters"
 
 
           # --------------------------------------------------------
-          # SERIALIZE
+          # Build plain-text context
           # --------------------------------------------------------
 
-          Write-Host "Serializing context..."
+          Write-Host "Creating plain-text release context..."
 
-          $json = $releaseContext |
-            ConvertTo-Json `
-              -Depth 15 `
-              -Compress
 
-          Write-Host "Context size: $($json.Length) characters"
+          $context = @"
+              ============================================================
+              RELEASE INFORMATION
+              ============================================================
+              
+              Repository:
+              ${{ github.repository }}
+              
+              Branch:
+              ${{ github.ref_name }}
+              
+              Release:
+              ${{ inputs.release_name }}
+              
+              Range Type:
+              ${{ inputs.range_type }}
+              
+              Previous Release:
+              ${{ inputs.previous_release }}
+              
+              Target Ref:
+              ${{ inputs.target_ref }}
+              
+              FROM COMMIT:
+              $from
+              
+              TO COMMIT:
+              $to
+              
+              
+              ============================================================
+              COMMITS
+              ============================================================
+              
+              $commits
+              
+              
+              ============================================================
+              PULL REQUESTS
+              ============================================================
+              
+              $pullRequests
+              
+              
+              ============================================================
+              CHANGED FILES
+              ============================================================
+              
+              $changedFiles
+              
+              
+              ============================================================
+              FILE STATISTICS
+              ============================================================
+              
+              $fileStatistics
+              
+              
+              ============================================================
+              WORK ITEMS
+              ============================================================
+              
+              $workItems
+              
+              ============================================================
+              END RELEASE CONTEXT
+              ============================================================
+              "@
 
 
           # --------------------------------------------------------
-          # SAVE
+          # Save plain-text context
           # --------------------------------------------------------
 
-          $json |
+          $context |
             Out-File `
-              "$env:GITHUB_WORKSPACE\release_context.json" `
+              "$env:GITHUB_WORKSPACE\release_context.txt" `
               -Encoding utf8
+
 
           Write-Host "=============================================="
           Write-Host "Release context created."
+          Write-Host "Context size: $($context.Length) characters"
           Write-Host "=============================================="
 
 
@@ -658,7 +670,7 @@ jobs:
           Write-Host "=============================================="
 
           $context = Get-Content `
-            "$env:GITHUB_WORKSPACE\release_context.json" `
+            "$env:GITHUB_WORKSPACE\release_context.txt" `
             -Raw
 
           $prompt = @"
@@ -920,7 +932,7 @@ jobs:
                       ConvertFrom-Json
           
                     $releaseContext = Get-Content `
-                      "$env:GITHUB_WORKSPACE\release_context.json" `
+                      "$env:GITHUB_WORKSPACE\release_context.txt" `
                       -Raw |
                       ConvertFrom-Json
           
@@ -1005,7 +1017,7 @@ jobs:
                     name: release-notes-${{ github.run_number }}
                     path: |
                       release_notes.json
-                      release_context.json
+                      release_context.txt
                       commits.txt
                       changed_files.txt
                       file_statistics.txt

@@ -28,6 +28,18 @@ on:
         required: false
         type: string
 
+      audience:
+        description: "Who will read the release notes?"
+        required: false
+        type: choice
+        default: customer
+        options:
+          - customer
+          - product
+          - internal
+          - developer
+
+
 permissions:
   contents: read
   pull-requests: read
@@ -38,9 +50,11 @@ jobs:
   generate-release-notes:
 
     runs-on: self-hosted
+
     timeout-minutes: 30
 
     steps:
+
 
       # ============================================================
       # 1. CHECKOUT REPOSITORY
@@ -70,6 +84,7 @@ jobs:
           Write-Host "Previous Release : ${{ inputs.previous_release }}"
           Write-Host "Target Ref       : ${{ inputs.target_ref }}"
           Write-Host "Release Name     : ${{ inputs.release_name }}"
+          Write-Host "Audience         : ${{ inputs.audience }}"
 
           Write-Host "=============================================="
 
@@ -89,6 +104,7 @@ jobs:
 
           Write-Host "Determining Git range..."
 
+
           # --------------------------------------------------------
           # PREVIOUS RELEASE
           # --------------------------------------------------------
@@ -96,20 +112,28 @@ jobs:
           if ($rangeType -eq "previous_release") {
 
               if ([string]::IsNullOrWhiteSpace($previousRelease)) {
+
                   throw "previous_release is required when range_type is previous_release."
               }
 
+
               Write-Host "Previous release: $previousRelease"
+
 
               git rev-parse "$previousRelease" | Out-Null
 
+
               if ($LASTEXITCODE -ne 0) {
+
                   throw "Previous release/tag '$previousRelease' could not be found."
               }
 
+
               $from = git rev-parse "$previousRelease"
+
               $to = git rev-parse "$targetRef"
           }
+
 
           # --------------------------------------------------------
           # FROM BEGINNING
@@ -119,11 +143,16 @@ jobs:
 
               Write-Host "Starting from first repository commit."
 
-              $from = git rev-list --max-parents=0 "$targetRef" |
-                  Select-Object -Last 1
+
+              $from = git rev-list `
+                --max-parents=0 `
+                "$targetRef" |
+                Select-Object -Last 1
+
 
               $to = git rev-parse "$targetRef"
           }
+
 
           else {
 
@@ -132,35 +161,40 @@ jobs:
 
 
           # --------------------------------------------------------
-          # Validate
+          # VALIDATE
           # --------------------------------------------------------
 
           if ([string]::IsNullOrWhiteSpace($from)) {
+
               throw "Unable to determine starting commit."
           }
 
+
           if ([string]::IsNullOrWhiteSpace($to)) {
+
               throw "Unable to determine target commit."
           }
 
 
           Write-Host "FROM: $from"
+
           Write-Host "TO  : $to"
 
 
           # --------------------------------------------------------
-          # Output values
+          # OUTPUT
           # --------------------------------------------------------
 
           "from=$from" |
-              Out-File `
-                -FilePath $env:GITHUB_OUTPUT `
-                -Append
+            Out-File `
+              -FilePath $env:GITHUB_OUTPUT `
+              -Append
+
 
           "to=$to" |
-              Out-File `
-                -FilePath $env:GITHUB_OUTPUT `
-                -Append
+            Out-File `
+              -FilePath $env:GITHUB_OUTPUT `
+              -Append
 
 
       # ============================================================
@@ -172,15 +206,17 @@ jobs:
         run: |
 
           $from = "${{ steps.git_range.outputs.from }}"
+
           $to = "${{ steps.git_range.outputs.to }}"
+
           $rangeType = "${{ inputs.range_type }}"
+
 
           Write-Host "Collecting commits..."
 
+
           # --------------------------------------------------------
           # FROM BEGINNING
-          #
-          # Include the first/root commit as well.
           # --------------------------------------------------------
 
           if ($rangeType -eq "from_beginning") {
@@ -192,8 +228,10 @@ jobs:
                   "$env:GITHUB_WORKSPACE\commits.txt" `
                   -Encoding utf8
 
+
               $commitCount = git rev-list --count "$to"
           }
+
 
           # --------------------------------------------------------
           # PREVIOUS RELEASE
@@ -207,6 +245,7 @@ jobs:
                 Out-File `
                   "$env:GITHUB_WORKSPACE\commits.txt" `
                   -Encoding utf8
+
 
               $commitCount = git rev-list --count "$from..$to"
           }
@@ -233,9 +272,12 @@ jobs:
         run: |
 
           $from = "${{ steps.git_range.outputs.from }}"
+
           $to = "${{ steps.git_range.outputs.to }}"
 
+
           Write-Host "Collecting changed files..."
+
 
           git diff `
             --name-status `
@@ -244,6 +286,7 @@ jobs:
             Out-File `
               "$env:GITHUB_WORKSPACE\changed_files.txt" `
               -Encoding utf8
+
 
           Write-Host "Changed files collected."
 
@@ -257,9 +300,12 @@ jobs:
         run: |
 
           $from = "${{ steps.git_range.outputs.from }}"
+
           $to = "${{ steps.git_range.outputs.to }}"
 
+
           Write-Host "Collecting file statistics..."
+
 
           git diff `
             --stat `
@@ -268,6 +314,7 @@ jobs:
             Out-File `
               "$env:GITHUB_WORKSPACE\file_statistics.txt" `
               -Encoding utf8
+
 
           Write-Host "File statistics collected."
 
@@ -281,14 +328,17 @@ jobs:
         run: |
 
           $from = "${{ steps.git_range.outputs.from }}"
+
           $to = "${{ steps.git_range.outputs.to }}"
+
           $rangeType = "${{ inputs.range_type }}"
+
 
           Write-Host "Extracting work-item references..."
 
 
           # --------------------------------------------------------
-          # Get commit messages
+          # GET COMMIT MESSAGES
           # --------------------------------------------------------
 
           if ($rangeType -eq "from_beginning") {
@@ -307,9 +357,9 @@ jobs:
 
 
           # --------------------------------------------------------
-          # Extract Jira / work-item references
+          # EXTRACT WORK ITEMS
           #
-          # Example:
+          # Examples:
           #
           # PROJ-123
           # PIQ-456
@@ -323,14 +373,14 @@ jobs:
 
 
           $workItems = $matches |
-              ForEach-Object {
-                  $_.Value
-              } |
-              Sort-Object -Unique
+            ForEach-Object {
+                $_.Value
+            } |
+            Sort-Object -Unique
 
 
           # --------------------------------------------------------
-          # Save
+          # SAVE
           # --------------------------------------------------------
 
           $workItems |
@@ -342,24 +392,26 @@ jobs:
 
           Write-Host "Detected work items:"
 
+
           if ($workItems.Count -eq 0) {
 
               Write-Host "None"
-
           }
+
           else {
 
-              $workItems | ForEach-Object {
-                  Write-Host " - $_"
-              }
+              $workItems |
+                ForEach-Object {
+                    Write-Host " - $_"
+                }
           }
 
 
       # ============================================================
       # 8. COLLECT RELEASE PULL REQUESTS
       #
-      # Optimized version:
-      # Get merged PRs once and filter locally.
+      # Optimized:
+      # Get merged PRs once instead of querying every commit.
       # ============================================================
 
       - name: Collect release pull requests
@@ -369,24 +421,32 @@ jobs:
         run: |
 
           Write-Host "=============================================="
+
           Write-Host "Collecting release pull requests..."
+
           Write-Host "=============================================="
 
 
           $from = "${{ steps.git_range.outputs.from }}"
+
           $to = "${{ steps.git_range.outputs.to }}"
+
           $repo = "${{ github.repository }}"
+
           $targetRef = "${{ inputs.target_ref }}"
 
 
           Write-Host "Repository : $repo"
+
           Write-Host "FROM       : $from"
+
           Write-Host "TO         : $to"
+
           Write-Host "Target ref : $targetRef"
 
 
           # --------------------------------------------------------
-          # Determine base branch
+          # DETERMINE BASE BRANCH
           # --------------------------------------------------------
 
           $baseBranch = $targetRef
@@ -402,19 +462,22 @@ jobs:
 
               Write-Host "Target ref is not a branch."
 
+
               $baseBranch = gh repo view "$repo" `
                 --json defaultBranchRef `
                 --jq ".defaultBranchRef.name"
+
 
               Write-Host "Using default branch: $baseBranch"
           }
 
 
           # --------------------------------------------------------
-          # Retrieve merged PRs
+          # GET MERGED PRs
           # --------------------------------------------------------
 
           Write-Host "Getting merged PRs..."
+
 
           $prJson = gh pr list `
             --repo "$repo" `
@@ -428,10 +491,12 @@ jobs:
 
               Write-Host "No merged PRs found."
 
+
               "[]" |
                 Out-File `
                   "$env:GITHUB_WORKSPACE\pull_requests.json" `
                   -Encoding utf8
+
 
               exit 0
           }
@@ -444,7 +509,7 @@ jobs:
 
 
           # --------------------------------------------------------
-          # Filter PRs by Git range
+          # FILTER PRs BY RANGE
           # --------------------------------------------------------
 
           $releasePRs = @()
@@ -453,6 +518,7 @@ jobs:
           foreach ($pr in $allPRs) {
 
               if ($null -eq $pr.mergeCommit) {
+
                   continue
               }
 
@@ -461,18 +527,13 @@ jobs:
 
 
               if ([string]::IsNullOrWhiteSpace($mergeSha)) {
+
                   continue
               }
 
 
               # ----------------------------------------------------
-              # Check:
-              #
-              # FROM is ancestor of PR merge
-              #
-              # AND
-              #
-              # PR merge is ancestor of TO
+              # FROM must be ancestor of merge commit
               # ----------------------------------------------------
 
               git merge-base `
@@ -483,6 +544,10 @@ jobs:
 
               $fromIsAncestor = ($LASTEXITCODE -eq 0)
 
+
+              # ----------------------------------------------------
+              # Merge commit must be ancestor of target
+              # ----------------------------------------------------
 
               git merge-base `
                 --is-ancestor `
@@ -503,7 +568,7 @@ jobs:
 
 
           # --------------------------------------------------------
-          # Sort PRs
+          # SORT
           # --------------------------------------------------------
 
           $releasePRs = @(
@@ -513,12 +578,14 @@ jobs:
 
 
           Write-Host "=============================================="
+
           Write-Host "Release PR count: $($releasePRs.Count)"
+
           Write-Host "=============================================="
 
 
           # --------------------------------------------------------
-          # Save
+          # SAVE
           # --------------------------------------------------------
 
           $releasePRs |
@@ -535,7 +602,8 @@ jobs:
       # 9. BUILD RELEASE CONTEXT
       #
       # IMPORTANT:
-      # This uses plain text instead of ConvertTo-Json.
+      # Plain text is used here.
+      # No large ConvertTo-Json operation.
       # ============================================================
 
       - name: Build release context
@@ -543,16 +611,19 @@ jobs:
         run: |
 
           Write-Host "=============================================="
+
           Write-Host "Building release context..."
+
           Write-Host "=============================================="
 
 
           $from = "${{ steps.git_range.outputs.from }}"
+
           $to = "${{ steps.git_range.outputs.to }}"
 
 
           # --------------------------------------------------------
-          # Read commits
+          # COMMITS
           # --------------------------------------------------------
 
           Write-Host "Loading commits..."
@@ -567,7 +638,7 @@ jobs:
 
 
           # --------------------------------------------------------
-          # Read changed files
+          # CHANGED FILES
           # --------------------------------------------------------
 
           Write-Host "Loading changed files..."
@@ -582,7 +653,7 @@ jobs:
 
 
           # --------------------------------------------------------
-          # Read file statistics
+          # FILE STATISTICS
           # --------------------------------------------------------
 
           Write-Host "Loading file statistics..."
@@ -597,7 +668,7 @@ jobs:
 
 
           # --------------------------------------------------------
-          # Read pull requests
+          # PULL REQUESTS
           # --------------------------------------------------------
 
           Write-Host "Loading pull requests..."
@@ -612,7 +683,7 @@ jobs:
 
 
           # --------------------------------------------------------
-          # Read work items
+          # WORK ITEMS
           # --------------------------------------------------------
 
           Write-Host "Loading work items..."
@@ -627,10 +698,7 @@ jobs:
 
 
           # --------------------------------------------------------
-          # Build plain-text context
-          #
-          # No PowerShell here-string.
-          # This avoids the indentation issue.
+          # BUILD CONTEXT
           # --------------------------------------------------------
 
           Write-Host "Creating plain-text release context..."
@@ -640,61 +708,101 @@ jobs:
 
 
           $contextParts += "============================================================"
+
           $contextParts += "RELEASE INFORMATION"
+
           $contextParts += "============================================================"
+
           $contextParts += ""
+
           $contextParts += "Repository: ${{ github.repository }}"
+
           $contextParts += "Branch: ${{ github.ref_name }}"
+
           $contextParts += "Release: ${{ inputs.release_name }}"
+
           $contextParts += "Range Type: ${{ inputs.range_type }}"
+
           $contextParts += "Previous Release: ${{ inputs.previous_release }}"
+
           $contextParts += "Target Ref: ${{ inputs.target_ref }}"
+
+          $contextParts += "Audience: ${{ inputs.audience }}"
+
           $contextParts += ""
+
           $contextParts += "FROM COMMIT:"
+
           $contextParts += $from
+
           $contextParts += ""
+
           $contextParts += "TO COMMIT:"
+
           $contextParts += $to
+
           $contextParts += ""
 
 
           $contextParts += "============================================================"
+
           $contextParts += "COMMITS"
+
           $contextParts += "============================================================"
+
           $contextParts += $commits
+
           $contextParts += ""
 
 
           $contextParts += "============================================================"
+
           $contextParts += "PULL REQUESTS"
+
           $contextParts += "============================================================"
+
           $contextParts += $pullRequests
+
           $contextParts += ""
 
 
           $contextParts += "============================================================"
+
           $contextParts += "CHANGED FILES"
+
           $contextParts += "============================================================"
+
           $contextParts += $changedFiles
+
           $contextParts += ""
 
 
           $contextParts += "============================================================"
+
           $contextParts += "FILE STATISTICS"
+
           $contextParts += "============================================================"
+
           $contextParts += $fileStatistics
+
           $contextParts += ""
 
 
           $contextParts += "============================================================"
+
           $contextParts += "WORK ITEMS"
+
           $contextParts += "============================================================"
+
           $contextParts += $workItems
+
           $contextParts += ""
 
 
           $contextParts += "============================================================"
+
           $contextParts += "END RELEASE CONTEXT"
+
           $contextParts += "============================================================"
 
 
@@ -702,7 +810,7 @@ jobs:
 
 
           # --------------------------------------------------------
-          # Save plain-text context
+          # SAVE
           # --------------------------------------------------------
 
           $context |
@@ -712,13 +820,16 @@ jobs:
 
 
           Write-Host "=============================================="
+
           Write-Host "Release context created."
+
           Write-Host "Context size: $($context.Length) characters"
+
           Write-Host "=============================================="
 
 
       # ============================================================
-      # 10. GENERATE RELEASE NOTES WITH CLAUDE
+      # 10. GENERATE CUSTOMER-FOCUSED RELEASE NOTES WITH CLAUDE
       # ============================================================
 
       - name: Generate release notes with Claude
@@ -728,12 +839,14 @@ jobs:
         run: |
 
           Write-Host "=============================================="
+
           Write-Host "       CLAUDE RELEASE ANALYSIS"
+
           Write-Host "=============================================="
 
 
           # --------------------------------------------------------
-          # Load context
+          # LOAD CONTEXT
           # --------------------------------------------------------
 
           $context = Get-Content `
@@ -745,141 +858,511 @@ jobs:
 
 
           # --------------------------------------------------------
-          # Build prompt
-          #
-          # No PowerShell here-string.
+          # CUSTOMER / AUDIENCE FOCUS
+          # --------------------------------------------------------
+
+          $audience = "${{ inputs.audience }}"
+
+
+          # --------------------------------------------------------
+          # BUILD PROMPT
           # --------------------------------------------------------
 
           $promptParts = @()
 
 
-          $promptParts += "You are generating professional software release notes."
-          $promptParts += ""
-          $promptParts += "Analyze ONLY the supplied Git repository information."
-          $promptParts += ""
-          $promptParts += "Do not invent functionality, changes, fixes, features,"
-          $promptParts += "work items, API changes, database changes, or breaking changes."
+          $promptParts += "You are an expert product release analyst."
+
           $promptParts += ""
 
+          $promptParts += "Your job is to analyze Git repository changes and transform them into meaningful release notes for the selected audience."
+
+          $promptParts += ""
+
+          $promptParts += "SELECTED AUDIENCE: $audience"
+
+          $promptParts += ""
+
+
+          # ========================================================
+          # CORE ANALYSIS INSTRUCTIONS
+          # ========================================================
 
           $promptParts += "============================================================"
+
+          $promptParts += "CORE ANALYSIS INSTRUCTIONS"
+
+          $promptParts += "============================================================"
+
+          $promptParts += ""
+
+
+          $promptParts += "Do NOT simply summarize commit messages."
+
+          $promptParts += ""
+
+          $promptParts += "Determine what the changes mean from the perspective of the selected audience."
+
+          $promptParts += ""
+
+          $promptParts += "For every meaningful change, determine:"
+
+          $promptParts += "1. What changed?"
+
+          $promptParts += "2. What can the user or customer do now?"
+
+          $promptParts += "3. What became easier, faster, clearer, safer, or more reliable?"
+
+          $promptParts += "4. Who is affected?"
+
+          $promptParts += "5. Why does the change matter?"
+
+          $promptParts += "6. Is the change actually visible or relevant to the user?"
+
+          $promptParts += ""
+
+
+          $promptParts += "Technical implementation details are evidence."
+
+          $promptParts += "They are NOT automatically customer-facing release notes."
+
+          $promptParts += ""
+
+
+          $promptParts += "For example:"
+
+          $promptParts += ""
+
+          $promptParts += "BAD CUSTOMER DESCRIPTION:"
+
+          $promptParts += "Added RetryService to DocumentProcessor."
+
+          $promptParts += ""
+
+          $promptParts += "BETTER CUSTOMER DESCRIPTION:"
+
+          $promptParts += "Document processing is now more resilient to temporary failures, reducing the need for users to restart processing."
+
+          $promptParts += ""
+
+
+          # ========================================================
+          # AUDIENCE-SPECIFIC RULES
+          # ========================================================
+
+          $promptParts += "============================================================"
+
+          $promptParts += "AUDIENCE RULES"
+
+          $promptParts += "============================================================"
+
+          $promptParts += ""
+
+
+          $promptParts += "CUSTOMER:"
+
+          $promptParts += "- Focus on user-visible capabilities and benefits."
+
+          $promptParts += "- Explain changes in simple business language."
+
+          $promptParts += "- Explain why the change matters to the customer."
+
+          $promptParts += "- Mention affected user groups when evidence supports it."
+
+          $promptParts += "- Do not expose internal implementation details unless they directly affect the customer."
+
+          $promptParts += "- Do not lead with file names, class names, services, libraries, commits, or internal architecture."
+
+          $promptParts += ""
+
+
+          $promptParts += "PRODUCT:"
+
+          $promptParts += "- Focus on capabilities, workflows, product behaviour, outcomes, and business/user impact."
+
+          $promptParts += "- Technical information should only be included when relevant to product behaviour."
+
+          $promptParts += ""
+
+
+          $promptParts += "INTERNAL:"
+
+          $promptParts += "- Include user impact plus important operational and implementation implications."
+
+          $promptParts += ""
+
+
+          $promptParts += "DEVELOPER:"
+
+          $promptParts += "- Include APIs, technical changes, implementation details, dependencies, configuration, and architecture where supported."
+
+          $promptParts += ""
+
+
+          # ========================================================
+          # EVIDENCE RULES
+          # ========================================================
+
+          $promptParts += "============================================================"
+
+          $promptParts += "EVIDENCE RULES"
+
+          $promptParts += "============================================================"
+
+          $promptParts += ""
+
+
+          $promptParts += "Use only the supplied repository evidence."
+
+          $promptParts += ""
+
+          $promptParts += "The evidence includes commits, pull requests, changed files, file statistics, and work-item references."
+
+          $promptParts += ""
+
+          $promptParts += "Do not invent functionality."
+
+          $promptParts += "Do not assume a feature exists simply because a file or class has a related name."
+
+          $promptParts += "Do not assume a work item was completed simply because its ID appears in a commit."
+
+          $promptParts += "Do not invent customer benefits that cannot reasonably be supported by the changes."
+
+          $promptParts += "Do not claim a performance improvement unless the evidence supports it."
+
+          $promptParts += "Do not claim a security improvement unless the evidence supports it."
+
+          $promptParts += "Do not claim a breaking change unless there is evidence."
+
+          $promptParts += ""
+
+
+          $promptParts += "When the evidence is insufficient to determine a customer benefit, describe the change conservatively."
+
+          $promptParts += ""
+
+
+          # ========================================================
+          # RELEASE INFORMATION
+          # ========================================================
+
+          $promptParts += "============================================================"
+
           $promptParts += "RELEASE INFORMATION"
+
           $promptParts += "============================================================"
+
           $promptParts += ""
+
           $promptParts += "Repository: ${{ github.repository }}"
+
           $promptParts += "Release: ${{ inputs.release_name }}"
+
           $promptParts += "Range Type: ${{ inputs.range_type }}"
+
           $promptParts += "Previous Release: ${{ inputs.previous_release }}"
+
           $promptParts += "Target: ${{ inputs.target_ref }}"
+
+          $promptParts += "Audience: $audience"
+
           $promptParts += ""
 
 
+          # ========================================================
+          # REPOSITORY CONTEXT
+          # ========================================================
+
           $promptParts += "============================================================"
+
           $promptParts += "REPOSITORY CHANGE CONTEXT"
+
           $promptParts += "============================================================"
+
           $promptParts += ""
+
           $promptParts += $context
+
           $promptParts += ""
 
 
+          # ========================================================
+          # REQUIRED OUTPUT
+          # ========================================================
+
           $promptParts += "============================================================"
+
           $promptParts += "REQUIRED OUTPUT"
+
           $promptParts += "============================================================"
+
           $promptParts += ""
 
 
           $promptParts += "Return ONLY valid JSON."
+
           $promptParts += ""
+
+
           $promptParts += "Use exactly this structure:"
+
           $promptParts += ""
 
 
           $promptParts += '{'
+
           $promptParts += '  "release": {'
+
           $promptParts += '    "name": "",'
+
           $promptParts += '    "from": "",'
+
           $promptParts += '    "to": ""'
+
           $promptParts += '  },'
-          $promptParts += '  "summary": "",'
-          $promptParts += '  "features": [],'
-          $promptParts += '  "enhancements": [],'
-          $promptParts += '  "bug_fixes": [],'
-          $promptParts += '  "api_changes": [],'
-          $promptParts += '  "database_changes": [],'
-          $promptParts += '  "configuration_changes": [],'
-          $promptParts += '  "breaking_changes": [],'
-          $promptParts += '  "technical_changes": [],'
+
+
+          $promptParts += '  "executive_summary": "",'
+
+
+          $promptParts += '  "customer_summary": "",'
+
+
+          $promptParts += '  "highlights": ['
+
+          $promptParts += '    {'
+
+          $promptParts += '      "title": "",'
+
+          $promptParts += '      "description": "",'
+
+          $promptParts += '      "user_benefit": "",'
+
+          $promptParts += '      "affected_users": "",'
+
+          $promptParts += '      "source": {'
+
+          $promptParts += '        "pull_requests": [],'
+
+          $promptParts += '        "commits": [],'
+
+          $promptParts += '        "work_items": []'
+
+          $promptParts += '      }'
+
+          $promptParts += '    }'
+
+          $promptParts += '  ],'
+
+
+          $promptParts += '  "new_capabilities": ['
+
+          $promptParts += '    {'
+
+          $promptParts += '      "title": "",'
+
+          $promptParts += '      "description": "",'
+
+          $promptParts += '      "user_benefit": "",'
+
+          $promptParts += '      "affected_users": "",'
+
+          $promptParts += '      "source": {'
+
+          $promptParts += '        "pull_requests": [],'
+
+          $promptParts += '        "commits": [],'
+
+          $promptParts += '        "work_items": []'
+
+          $promptParts += '      }'
+
+          $promptParts += '    }'
+
+          $promptParts += '  ],'
+
+
+          $promptParts += '  "improvements": ['
+
+          $promptParts += '    {'
+
+          $promptParts += '      "title": "",'
+
+          $promptParts += '      "description": "",'
+
+          $promptParts += '      "user_benefit": "",'
+
+          $promptParts += '      "affected_users": "",'
+
+          $promptParts += '      "source": {'
+
+          $promptParts += '        "pull_requests": [],'
+
+          $promptParts += '        "commits": [],'
+
+          $promptParts += '        "work_items": []'
+
+          $promptParts += '      }'
+
+          $promptParts += '    }'
+
+          $promptParts += '  ],'
+
+
+          $promptParts += '  "bug_fixes": ['
+
+          $promptParts += '    {'
+
+          $promptParts += '      "title": "",'
+
+          $promptParts += '      "description": "",'
+
+          $promptParts += '      "user_benefit": "",'
+
+          $promptParts += '      "affected_users": "",'
+
+          $promptParts += '      "source": {'
+
+          $promptParts += '        "pull_requests": [],'
+
+          $promptParts += '        "commits": [],'
+
+          $promptParts += '        "work_items": []'
+
+          $promptParts += '      }'
+
+          $promptParts += '    }'
+
+          $promptParts += '  ],'
+
+
+          $promptParts += '  "user_experience_changes": ['
+
+          $promptParts += '    {'
+
+          $promptParts += '      "title": "",'
+
+          $promptParts += '      "description": "",'
+
+          $promptParts += '      "user_benefit": "",'
+
+          $promptParts += '      "affected_users": "",'
+
+          $promptParts += '      "source": {'
+
+          $promptParts += '        "pull_requests": [],'
+
+          $promptParts += '        "commits": [],'
+
+          $promptParts += '        "work_items": []'
+
+          $promptParts += '      }'
+
+          $promptParts += '    }'
+
+          $promptParts += '  ],'
+
+
+          $promptParts += '  "important_changes": ['
+
+          $promptParts += '    {'
+
+          $promptParts += '      "title": "",'
+
+          $promptParts += '      "description": "",'
+
+          $promptParts += '      "customer_impact": "",'
+
+          $promptParts += '      "source": {'
+
+          $promptParts += '        "pull_requests": [],'
+
+          $promptParts += '        "commits": [],'
+
+          $promptParts += '        "work_items": []'
+
+          $promptParts += '      }'
+
+          $promptParts += '    }'
+
+          $promptParts += '  ],'
+
+
+          $promptParts += '  "technical_notes": [],'
+
+
           $promptParts += '  "work_items": [],'
+
+
           $promptParts += '  "statistics": {'
+
           $promptParts += '    "commits": 0,'
+
           $promptParts += '    "pull_requests": 0,'
+
           $promptParts += '    "files_changed": 0'
+
           $promptParts += '  }'
+
+
           $promptParts += '}'
 
 
           $promptParts += ""
+
+
+          # ========================================================
+          # FINAL CUSTOMER-FOCUS RULES
+          # ========================================================
+
           $promptParts += "============================================================"
-          $promptParts += "RULES"
+
+          $promptParts += "FINAL CUSTOMER-FOCUS RULES"
+
           $promptParts += "============================================================"
+
           $promptParts += ""
 
 
-          $promptParts += "1. Use commit messages, pull requests, changed files,"
-          $promptParts += "   file statistics and work-item references as evidence."
+          $promptParts += "1. Prioritize what changed for users over how it was implemented."
 
+          $promptParts += "2. Translate technical changes into user outcomes when the evidence supports that translation."
 
-          $promptParts += "2. Do not claim a feature exists unless the supplied"
-          $promptParts += "   information supports it."
+          $promptParts += "3. Combine multiple commits that represent the same user-facing change."
 
+          $promptParts += "4. Avoid repeating the same change across multiple categories."
 
-          $promptParts += "3. Do not assume that mentioning a work-item ID means"
-          $promptParts += "   the entire work item was completed."
+          $promptParts += "5. Do not turn every commit into a release-note item."
 
+          $promptParts += "6. Internal refactoring should not appear as a customer feature."
 
-          $promptParts += "4. Group related commits into meaningful release-note entries."
+          $promptParts += "7. Dependency updates should not appear as customer improvements unless they have a demonstrated user impact."
 
+          $promptParts += "8. Test changes should normally not appear in customer release notes."
 
-          $promptParts += "5. Write the release notes in clear business language."
+          $promptParts += "9. CI/CD changes should normally not appear in customer release notes."
 
+          $promptParts += "10. File names and class names should normally be omitted from customer-facing descriptions."
 
-          $promptParts += "6. Put implementation-level changes under"
-          $promptParts += "   technical_changes unless they directly affect"
-          $promptParts += "   application behaviour."
+          $promptParts += "11. Explain the practical outcome instead of the implementation."
 
+          $promptParts += "12. Use clear language that a non-technical customer can understand."
 
-          $promptParts += "7. Identify API changes only when supported by the"
-          $promptParts += "   supplied changes."
+          $promptParts += "13. Do not exaggerate the importance of a change."
 
+          $promptParts += "14. Do not claim that a change improves something unless the repository evidence supports it."
 
-          $promptParts += "8. Identify database changes only when supported by"
-          $promptParts += "   the supplied changes."
+          $promptParts += "15. If there are no meaningful customer-facing changes in a category, return an empty array."
 
-
-          $promptParts += "9. Identify breaking changes only when there is"
-          $promptParts += "   actual evidence."
-
-
-          $promptParts += "10. Empty categories must be returned as []."
-
-
-          $promptParts += "11. The summary should describe the overall release"
-          $promptParts += "    based only on the supplied evidence."
-
-
-          $promptParts += "12. Every significant release-note item should"
-          $promptParts += "    reference its supporting commit or PR where possible."
-
-
-          $promptParts += "13. Return ONLY valid JSON."
+          $promptParts += "16. Return ONLY valid JSON."
 
 
           $prompt = $promptParts -join "`r`n"
 
 
-          # --------------------------------------------------------
-          # Build Claude API request
-          # --------------------------------------------------------
+          # ========================================================
+          # BUILD CLAUDE REQUEST
+          # ========================================================
 
           $body = @{
               model = "claude-sonnet-5"
@@ -889,6 +1372,7 @@ jobs:
               messages = @(
                   @{
                       role = "user"
+
                       content = $prompt
                   }
               )
@@ -899,9 +1383,9 @@ jobs:
           Write-Host "Sending request to Claude..."
 
 
-          # --------------------------------------------------------
-          # Call Claude
-          # --------------------------------------------------------
+          # ========================================================
+          # CALL CLAUDE
+          # ========================================================
 
           $response = Invoke-RestMethod `
             -Uri "https://api.anthropic.com/v1/messages" `
@@ -917,18 +1401,28 @@ jobs:
           Write-Host "Claude response received."
 
 
-          # --------------------------------------------------------
-          # Token usage
-          # --------------------------------------------------------
+          # ========================================================
+          # TOKEN USAGE
+          # ========================================================
 
           $inputTokens = $response.usage.input_tokens
+
           $outputTokens = $response.usage.output_tokens
+
           $totalTokens = $inputTokens + $outputTokens
 
 
+          Write-Host "=============================================="
+
+          Write-Host "CLAUDE TOKEN USAGE"
+
           Write-Host "Input tokens : $inputTokens"
+
           Write-Host "Output tokens: $outputTokens"
+
           Write-Host "Total tokens : $totalTokens"
+
+          Write-Host "=============================================="
 
 
           @{
@@ -942,9 +1436,9 @@ jobs:
             -Encoding utf8
 
 
-          # --------------------------------------------------------
-          # Extract Claude response
-          # --------------------------------------------------------
+          # ========================================================
+          # EXTRACT CLAUDE RESPONSE
+          # ========================================================
 
           $text = (
               $response.content |
@@ -955,6 +1449,7 @@ jobs:
 
 
           if (-not $text) {
+
               throw "Claude returned an empty response."
           }
 
@@ -963,30 +1458,34 @@ jobs:
 
 
           # --------------------------------------------------------
-          # Remove Markdown JSON fences
+          # REMOVE MARKDOWN JSON FENCES
           # --------------------------------------------------------
 
           $text = $text -replace '^```json\s*', ''
+
           $text = $text -replace '^```\s*', ''
+
           $text = $text -replace '\s*```$', ''
 
           $text = $text.Trim()
 
 
-          # --------------------------------------------------------
-          # Validate JSON
-          # --------------------------------------------------------
+          # ========================================================
+          # VALIDATE JSON
+          # ========================================================
 
           try {
 
               $releaseNotesObject = $text |
                 ConvertFrom-Json
-
           }
+
           catch {
 
               Write-Host "=============================================="
+
               Write-Host "CLAUDE RETURNED INVALID JSON"
+
               Write-Host "=============================================="
 
               Write-Host $text
@@ -995,9 +1494,9 @@ jobs:
           }
 
 
-          # --------------------------------------------------------
-          # Save release notes
-          # --------------------------------------------------------
+          # ========================================================
+          # SAVE RELEASE NOTES
+          # ========================================================
 
           $releaseNotesObject |
             ConvertTo-Json -Depth 30 |
@@ -1011,6 +1510,10 @@ jobs:
 
       # ============================================================
       # 11. BUILD FINAL N8N PAYLOAD
+      #
+      # IMPORTANT:
+      # Do NOT send the complete Git context to n8n.
+      # Only send the generated release analysis.
       # ============================================================
 
       - name: Build n8n payload
@@ -1018,15 +1521,18 @@ jobs:
         run: |
 
           Write-Host "=============================================="
+
           Write-Host "Building final n8n payload..."
+
           Write-Host "=============================================="
 
 
           # --------------------------------------------------------
-          # Load release notes
+          # LOAD RELEASE NOTES
           # --------------------------------------------------------
 
           Write-Host "Loading release notes..."
+
 
           $releaseNotes = Get-Content `
             "$env:GITHUB_WORKSPACE\release_notes.json" `
@@ -1035,10 +1541,11 @@ jobs:
 
 
           # --------------------------------------------------------
-          # Load token usage
+          # LOAD TOKEN USAGE
           # --------------------------------------------------------
 
           Write-Host "Loading token usage..."
+
 
           $tokenUsage = Get-Content `
             "$env:GITHUB_WORKSPACE\token_usage.json" `
@@ -1047,13 +1554,11 @@ jobs:
 
 
           # --------------------------------------------------------
-          # Calculate basic statistics
+          # COUNT COMMITS
           # --------------------------------------------------------
 
-          Write-Host "Calculating release statistics..."
-
-
           $commitCount = 0
+
 
           if (Test-Path "$env:GITHUB_WORKSPACE\commits.txt") {
 
@@ -1064,7 +1569,12 @@ jobs:
           }
 
 
+          # --------------------------------------------------------
+          # COUNT CHANGED FILES
+          # --------------------------------------------------------
+
           $changedFileCount = 0
+
 
           if (Test-Path "$env:GITHUB_WORKSPACE\changed_files.txt") {
 
@@ -1075,7 +1585,12 @@ jobs:
           }
 
 
+          # --------------------------------------------------------
+          # COUNT PULL REQUESTS
+          # --------------------------------------------------------
+
           $pullRequestCount = 0
+
 
           if (Test-Path "$env:GITHUB_WORKSPACE\pull_requests.json") {
 
@@ -1084,37 +1599,47 @@ jobs:
                 -Raw |
                 ConvertFrom-Json
 
+
               $pullRequestCount = @($prs).Count
           }
 
 
-          # --------------------------------------------------------
-          # Build SMALL payload
-          #
-          # IMPORTANT:
-          # Do NOT include release_context.txt here.
-          # It can contain a very large amount of Git history.
-          # --------------------------------------------------------
+          # ========================================================
+          # SMALL N8N PAYLOAD
+          # ========================================================
 
           $payload = @{
-              
+
               status = "completed"
+
 
               repository = "${{ github.repository }}"
 
+
               workflow = "${{ github.workflow }}"
 
+
               run_id = "${{ github.run_id }}"
+
 
               run_number = "${{ github.run_number }}"
 
 
+              audience = "${{ inputs.audience }}"
+
+
               release = @{
+
                   name = "${{ inputs.release_name }}"
+
                   range_type = "${{ inputs.range_type }}"
+
                   previous_release = "${{ inputs.previous_release }}"
+
                   target_ref = "${{ inputs.target_ref }}"
+
                   from = "${{ steps.git_range.outputs.from }}"
+
                   to = "${{ steps.git_range.outputs.to }}"
               }
 
@@ -1123,8 +1648,11 @@ jobs:
 
 
               statistics = @{
+
                   commits = $commitCount
+
                   pull_requests = $pullRequestCount
+
                   files_changed = $changedFileCount
               }
 
@@ -1133,21 +1661,21 @@ jobs:
           }
 
 
-          # --------------------------------------------------------
-          # Serialize SMALL payload
-          # --------------------------------------------------------
+          # ========================================================
+          # SERIALIZE
+          # ========================================================
 
           Write-Host "Serializing n8n payload..."
 
 
           $json = $payload |
             ConvertTo-Json `
-              -Depth 15
+              -Depth 20
 
 
-          # --------------------------------------------------------
-          # Save
-          # --------------------------------------------------------
+          # ========================================================
+          # SAVE
+          # ========================================================
 
           $json |
             Out-File `
@@ -1156,8 +1684,11 @@ jobs:
 
 
           Write-Host "=============================================="
+
           Write-Host "n8n payload created."
+
           Write-Host "Payload size: $($json.Length) characters"
+
           Write-Host "=============================================="
 
 
@@ -1171,6 +1702,10 @@ jobs:
         shell: powershell
         run: |
 
+          # --------------------------------------------------------
+          # VALIDATE WEBHOOK
+          # --------------------------------------------------------
+
           if ([string]::IsNullOrWhiteSpace($env:N8N_WEBHOOK_URL)) {
 
               throw "N8N_RELEASE_NOTES_WEBHOOK_URL secret is not configured."
@@ -1180,10 +1715,21 @@ jobs:
           Write-Host "Sending release notes to n8n..."
 
 
+          # --------------------------------------------------------
+          # READ PAYLOAD
+          # --------------------------------------------------------
+
           $payload = Get-Content `
             "$env:GITHUB_WORKSPACE\n8n_payload.json" `
             -Raw
 
+
+          Write-Host "Payload size: $($payload.Length) characters"
+
+
+          # --------------------------------------------------------
+          # SEND
+          # --------------------------------------------------------
 
           $result = Invoke-RestMethod `
             -Uri $env:N8N_WEBHOOK_URL `
@@ -1203,18 +1749,29 @@ jobs:
       - name: Upload release analysis
         uses: actions/upload-artifact@v4
         with:
+
           name: release-notes-${{ github.run_number }}
 
           path: |
+
             release_notes.json
+
             release_context.txt
+
             commits.txt
+
             changed_files.txt
+
             file_statistics.txt
+
             pull_requests.json
+
             work_items.json
+
             commit_stats.json
+
             token_usage.json
+
             n8n_payload.json
 
           retention-days: 90

@@ -4,6 +4,11 @@ on:
   workflow_dispatch:
     inputs:
 
+      request_id:
+        description: "Correlation ID supplied by n8n"
+        required: true
+        type: string
+
       range_type:
         description: "Select the Git change range"
         required: true
@@ -38,6 +43,43 @@ on:
           - product
           - internal
           - developer
+
+      major_version:
+        description: "Major version number"
+        required: true
+        type: string
+
+      minor_version:
+        description: "Minor version number"
+        required: true
+        type: string
+
+      patch_version:
+        description: "Patch version number"
+        required: true
+        type: string
+
+      build_number:
+        description: "Build number"
+        required: true
+        type: string
+
+      audience_tags_json:
+        description: "JSON array of Release Notes UI audience tags"
+        required: false
+        default: "[]"
+        type: string
+
+      images_json:
+        description: "JSON array of pre-uploaded image metadata"
+        required: false
+        default: "[]"
+        type: string
+
+      requested_by:
+        description: "User/service that requested generation"
+        required: true
+        type: string
 
 
 permissions:
@@ -1288,6 +1330,21 @@ jobs:
           $promptParts += '  ],'
 
 
+          $promptParts += '  "localized_content": {'
+
+          $promptParts += '    "en-GB": { "summary": "", "note": "" },'
+
+          $promptParts += '    "en-US": { "summary": "", "note": "" },'
+
+          $promptParts += '    "de-DE": { "summary": "", "note": "" },'
+
+          $promptParts += '    "es-ES": { "summary": "", "note": "" },'
+
+          $promptParts += '    "fr-FR": { "summary": "", "note": "" }'
+
+          $promptParts += '  },'
+
+
           $promptParts += '  "technical_notes": [],'
 
 
@@ -1354,7 +1411,11 @@ jobs:
 
           $promptParts += "15. If there are no meaningful customer-facing changes in a category, return an empty array."
 
-          $promptParts += "16. Return ONLY valid JSON."
+          $promptParts += "16. Populate localized_content in all five locales. Summary must be concise plain text. Note must be complete Markdown suitable for the release-note editor."
+
+          $promptParts += "17. en-GB is the source wording. en-US must use US spelling. German, Spanish, and French must be accurate translations with no invented details."
+
+          $promptParts += "18. Return ONLY valid JSON."
 
 
           $prompt = $promptParts -join "`r`n"
@@ -1517,6 +1578,10 @@ jobs:
       # ============================================================
 
       - name: Build n8n payload
+        env:
+          AUDIENCE_TAGS_JSON: ${{ inputs.audience_tags_json }}
+          IMAGES_JSON: ${{ inputs.images_json }}
+          REQUESTED_BY: ${{ inputs.requested_by }}
         shell: powershell
         run: |
 
@@ -1559,13 +1624,25 @@ jobs:
 
           $commitCount = 0
 
+          $commitShas = @()
 
           if (Test-Path "$env:GITHUB_WORKSPACE\commits.txt") {
 
-              $commitCount = @(
-                  Get-Content `
-                    "$env:GITHUB_WORKSPACE\commits.txt"
-              ).Count
+              $commitLines = @(
+                Get-Content "$env:GITHUB_WORKSPACE\commits.txt"
+              )
+
+              $commitCount = $commitLines.Count
+
+              $commitShas = @(
+                $commitLines |
+                  ForEach-Object {
+                    if ($_ -match '^([^|]+)\|') {
+                      $Matches[1]
+                    }
+                  } |
+                  Sort-Object -Unique
+              )
           }
 
 
@@ -1591,6 +1668,7 @@ jobs:
 
           $pullRequestCount = 0
 
+          $pullRequestNumbers = @()
 
           if (Test-Path "$env:GITHUB_WORKSPACE\pull_requests.json") {
 
@@ -1601,6 +1679,25 @@ jobs:
 
 
               $pullRequestCount = @($prs).Count
+
+              $pullRequestNumbers = @(
+                $prs |
+                  ForEach-Object { [int]$_.number } |
+                  Sort-Object -Unique
+              )
+          }
+
+
+          # --------------------------------------------------------
+          # VALIDATE REQUEST METADATA
+          # --------------------------------------------------------
+
+          try {
+              $audienceTags = @($env:AUDIENCE_TAGS_JSON | ConvertFrom-Json)
+              $images = @($env:IMAGES_JSON | ConvertFrom-Json)
+          }
+          catch {
+              throw "Request audience/image metadata is not valid JSON."
           }
 
 
@@ -1612,6 +1709,7 @@ jobs:
 
               status = "completed"
 
+              request_id = "${{ inputs.request_id }}"
 
               repository = "${{ github.repository }}"
 
@@ -1624,9 +1722,24 @@ jobs:
 
               run_number = "${{ github.run_number }}"
 
+              run_url = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+              generated_at = (Get-Date).ToUniversalTime().ToString("o")
+
+              requested_by = $env:REQUESTED_BY
 
               audience = "${{ inputs.audience }}"
 
+              audience_tags = $audienceTags
+
+              images = $images
+
+              version = @{
+                  major = [int]"${{ inputs.major_version }}"
+                  minor = [int]"${{ inputs.minor_version }}"
+                  patch = [int]"${{ inputs.patch_version }}"
+                  build = [int]"${{ inputs.build_number }}"
+              }
 
               release = @{
 
@@ -1646,6 +1759,10 @@ jobs:
 
               release_notes = $releaseNotes
 
+              source_analysis = @{
+                  commit_shas = $commitShas
+                  pull_request_numbers = $pullRequestNumbers
+              }
 
               statistics = @{
 
@@ -1699,6 +1816,7 @@ jobs:
       - name: Send release notes to n8n
         env:
           N8N_WEBHOOK_URL: ${{ secrets.N8N_RELEASE_NOTES_WEBHOOK_URL }}
+          N8N_WEBHOOK_SECRET: ${{ secrets.N8N_RELEASE_NOTES_CALLBACK_SECRET }}
         shell: powershell
         run: |
 
@@ -1709,6 +1827,11 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:N8N_WEBHOOK_URL)) {
 
               throw "N8N_RELEASE_NOTES_WEBHOOK_URL secret is not configured."
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:N8N_WEBHOOK_SECRET)) {
+
+              throw "N8N_RELEASE_NOTES_CALLBACK_SECRET is not configured."
           }
 
 
@@ -1734,6 +1857,7 @@ jobs:
           $result = Invoke-RestMethod `
             -Uri $env:N8N_WEBHOOK_URL `
             -Method Post `
+            -Headers @{ "X-Webhook-Secret" = $env:N8N_WEBHOOK_SECRET } `
             -ContentType "application/json" `
             -Body $payload `
             -TimeoutSec 60

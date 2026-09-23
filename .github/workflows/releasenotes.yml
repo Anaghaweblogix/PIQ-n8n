@@ -330,7 +330,9 @@ jobs:
 
 
       # ============================================================
-      # 9. COLLECT PRs BELONGING TO THE RELEASE RANGE
+      # 9. COLLECT RELEASE PULL REQUESTS
+      #    Optimized: one GitHub query instead of one API call
+      #    per commit.
       # ============================================================
 
       - name: Collect release pull requests
@@ -339,53 +341,161 @@ jobs:
         shell: powershell
         run: |
 
+          Write-Host "=============================================="
+          Write-Host "Collecting release pull requests..."
+          Write-Host "=============================================="
+
           $from = "${{ steps.git_range.outputs.from }}"
           $to = "${{ steps.git_range.outputs.to }}"
-
           $repo = "${{ github.repository }}"
+          $targetRef = "${{ inputs.target_ref }}"
 
-          Write-Host "Finding PRs associated with release commits..."
+          Write-Host "Repository : $repo"
+          Write-Host "FROM       : $from"
+          Write-Host "TO         : $to"
+          Write-Host "Target ref : $targetRef"
 
-          # Get commits in the selected range
-          $commitShas = git rev-list "$from..$to"
 
-          $prMap = @{}
+          # --------------------------------------------------------
+          # Determine base branch
+          # --------------------------------------------------------
+          #
+          # For normal usage target_ref will be something like:
+          #
+          # main
+          #
+          # If target_ref is a tag/commit, use the repository's
+          # default branch instead.
+          # --------------------------------------------------------
 
-          foreach ($sha in $commitShas) {
+          $baseBranch = $targetRef
 
-              Write-Host "Checking commit $sha"
+          git show-ref --verify --quiet "refs/remotes/origin/$targetRef"
 
-              try {
+          if ($LASTEXITCODE -ne 0) {
 
-                  $prs = gh api `
-                    "repos/$repo/commits/$sha/pulls" `
-                    --header "Accept: application/vnd.github+json" |
-                    ConvertFrom-Json
+              Write-Host "Target ref is not a branch."
 
-                  foreach ($pr in $prs) {
+              $baseBranch = gh repo view "$repo" `
+                  --json defaultBranchRef `
+                  --jq ".defaultBranchRef.name"
 
-                      if (-not $prMap.ContainsKey($pr.number)) {
+              Write-Host "Using default branch: $baseBranch"
+          }
 
-                          $prMap[$pr.number] = $pr
-                      }
-                  }
 
+          # --------------------------------------------------------
+          # Get merged PRs for the target branch
+          #
+          # IMPORTANT:
+          # This makes one GitHub CLI/API operation rather than
+          # querying GitHub separately for every commit.
+          # --------------------------------------------------------
+
+          Write-Host "Getting merged PRs..."
+
+          $prJson = gh pr list `
+              --repo "$repo" `
+              --state merged `
+              --base "$baseBranch" `
+              --limit 1000 `
+              --json number,title,body,author,mergedAt,baseRefName,headRefName,labels,url,mergeCommit
+
+          if (-not $prJson) {
+
+              Write-Host "No merged PRs found."
+
+              "[]" |
+                  Out-File `
+                    "$env:GITHUB_WORKSPACE\pull_requests.json" `
+                    -Encoding utf8
+
+              exit 0
+          }
+
+
+          $allPRs = $prJson | ConvertFrom-Json
+
+          Write-Host "Merged PRs retrieved: $($allPRs.Count)"
+
+
+          # --------------------------------------------------------
+          # Filter PRs by the selected Git range
+          #
+          # A PR belongs to the release if its merge commit is
+          # inside:
+          #
+          # FROM → TO
+          # --------------------------------------------------------
+
+          $releasePRs = @()
+
+          foreach ($pr in $allPRs) {
+
+              if ($null -eq $pr.mergeCommit) {
+                  continue
               }
-              catch {
 
-                  Write-Host "Could not retrieve PRs for $sha"
+              $mergeSha = $pr.mergeCommit.oid
+
+              if ([string]::IsNullOrWhiteSpace($mergeSha)) {
+                  continue
+              }
+
+              # Check:
+              #
+              # Is FROM an ancestor of the PR merge commit?
+              #
+              # AND
+              #
+              # Is the PR merge commit an ancestor of TO?
+              #
+
+              git merge-base --is-ancestor "$from" "$mergeSha"
+
+              $fromIsAncestor = ($LASTEXITCODE -eq 0)
+
+              git merge-base --is-ancestor "$mergeSha" "$to"
+
+              $mergeIsBeforeTarget = ($LASTEXITCODE -eq 0)
+
+
+              if ($fromIsAncestor -and $mergeIsBeforeTarget) {
+
+                  Write-Host "Including PR #$($pr.number): $($pr.title)"
+
+                  $releasePRs += $pr
               }
           }
 
-          $releasePRs = @($prMap.Values)
 
+          # --------------------------------------------------------
+          # Sort by merged date
+          # --------------------------------------------------------
+
+          $releasePRs = @(
+              $releasePRs |
+              Sort-Object mergedAt
+          )
+
+
+          Write-Host "=============================================="
           Write-Host "Release PR count: $($releasePRs.Count)"
+          Write-Host "=============================================="
+
+
+          # --------------------------------------------------------
+          # Save
+          # --------------------------------------------------------
 
           $releasePRs |
-            ConvertTo-Json -Depth 20 |
-            Out-File `
-              "$env:GITHUB_WORKSPACE\pull_requests.json" `
-              -Encoding utf8
+              ConvertTo-Json -Depth 20 |
+              Out-File `
+                "$env:GITHUB_WORKSPACE\pull_requests.json" `
+                -Encoding utf8
+
+
+          Write-Host "Pull request data saved."
 
 
       # ============================================================

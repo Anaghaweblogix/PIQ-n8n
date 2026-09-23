@@ -1017,12 +1017,16 @@ jobs:
         shell: powershell
         run: |
 
+          Write-Host "=============================================="
           Write-Host "Building final n8n payload..."
+          Write-Host "=============================================="
 
 
           # --------------------------------------------------------
-          # Release notes
+          # Load release notes
           # --------------------------------------------------------
+
+          Write-Host "Loading release notes..."
 
           $releaseNotes = Get-Content `
             "$env:GITHUB_WORKSPACE\release_notes.json" `
@@ -1031,20 +1035,10 @@ jobs:
 
 
           # --------------------------------------------------------
-          # Release context
-          #
-          # IMPORTANT:
-          # This is TEXT, NOT JSON.
+          # Load token usage
           # --------------------------------------------------------
 
-          $releaseContext = Get-Content `
-            "$env:GITHUB_WORKSPACE\release_context.txt" `
-            -Raw
-
-
-          # --------------------------------------------------------
-          # Token usage
-          # --------------------------------------------------------
+          Write-Host "Loading token usage..."
 
           $tokenUsage = Get-Content `
             "$env:GITHUB_WORKSPACE\token_usage.json" `
@@ -1053,10 +1047,57 @@ jobs:
 
 
           # --------------------------------------------------------
-          # Build payload
+          # Calculate basic statistics
+          # --------------------------------------------------------
+
+          Write-Host "Calculating release statistics..."
+
+
+          $commitCount = 0
+
+          if (Test-Path "$env:GITHUB_WORKSPACE\commits.txt") {
+
+              $commitCount = @(
+                  Get-Content `
+                    "$env:GITHUB_WORKSPACE\commits.txt"
+              ).Count
+          }
+
+
+          $changedFileCount = 0
+
+          if (Test-Path "$env:GITHUB_WORKSPACE\changed_files.txt") {
+
+              $changedFileCount = @(
+                  Get-Content `
+                    "$env:GITHUB_WORKSPACE\changed_files.txt"
+              ).Count
+          }
+
+
+          $pullRequestCount = 0
+
+          if (Test-Path "$env:GITHUB_WORKSPACE\pull_requests.json") {
+
+              $prs = Get-Content `
+                "$env:GITHUB_WORKSPACE\pull_requests.json" `
+                -Raw |
+                ConvertFrom-Json
+
+              $pullRequestCount = @($prs).Count
+          }
+
+
+          # --------------------------------------------------------
+          # Build SMALL payload
+          #
+          # IMPORTANT:
+          # Do NOT include release_context.txt here.
+          # It can contain a very large amount of Git history.
           # --------------------------------------------------------
 
           $payload = @{
+              
               status = "completed"
 
               repository = "${{ github.repository }}"
@@ -1067,6 +1108,7 @@ jobs:
 
               run_number = "${{ github.run_number }}"
 
+
               release = @{
                   name = "${{ inputs.release_name }}"
                   range_type = "${{ inputs.range_type }}"
@@ -1076,26 +1118,47 @@ jobs:
                   to = "${{ steps.git_range.outputs.to }}"
               }
 
+
               release_notes = $releaseNotes
 
-              release_context = $releaseContext
+
+              statistics = @{
+                  commits = $commitCount
+                  pull_requests = $pullRequestCount
+                  files_changed = $changedFileCount
+              }
+
 
               token_usage = $tokenUsage
           }
 
 
           # --------------------------------------------------------
-          # Save payload
+          # Serialize SMALL payload
           # --------------------------------------------------------
 
-          $payload |
-            ConvertTo-Json -Depth 30 |
+          Write-Host "Serializing n8n payload..."
+
+
+          $json = $payload |
+            ConvertTo-Json `
+              -Depth 15
+
+
+          # --------------------------------------------------------
+          # Save
+          # --------------------------------------------------------
+
+          $json |
             Out-File `
               "$env:GITHUB_WORKSPACE\n8n_payload.json" `
               -Encoding utf8
 
 
+          Write-Host "=============================================="
           Write-Host "n8n payload created."
+          Write-Host "Payload size: $($json.Length) characters"
+          Write-Host "=============================================="
 
 
       # ============================================================

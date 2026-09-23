@@ -396,36 +396,88 @@ jobs:
         shell: powershell
         run: |
 
+          Write-Host "=============================================="
           Write-Host "Building release context..."
+          Write-Host "=============================================="
 
           $from = "${{ steps.git_range.outputs.from }}"
           $to = "${{ steps.git_range.outputs.to }}"
+
+          # --------------------------------------------------------
+          # COMMITS
+          # --------------------------------------------------------
+
+          Write-Host "Loading commits..."
 
           $commits = Get-Content `
             "$env:GITHUB_WORKSPACE\commits.txt" `
             -Raw
 
+          Write-Host "Commits loaded."
+
+
+          # --------------------------------------------------------
+          # CHANGED FILES
+          # --------------------------------------------------------
+
+          Write-Host "Loading changed files..."
+
           $changedFiles = Get-Content `
             "$env:GITHUB_WORKSPACE\changed_files.txt" `
             -Raw
+
+          Write-Host "Changed files loaded."
+
+
+          # --------------------------------------------------------
+          # FILE STATISTICS
+          # --------------------------------------------------------
+
+          Write-Host "Loading file statistics..."
 
           $fileStatistics = Get-Content `
             "$env:GITHUB_WORKSPACE\file_statistics.txt" `
             -Raw
 
-          $diff = Get-Content `
-            "$env:GITHUB_WORKSPACE\release_diff.txt" `
-            -Raw
+          Write-Host "File statistics loaded."
+
+
+          # --------------------------------------------------------
+          # PULL REQUESTS
+          # --------------------------------------------------------
+
+          Write-Host "Loading pull requests..."
 
           $pullRequests = Get-Content `
             "$env:GITHUB_WORKSPACE\pull_requests.json" `
-            -Raw
+            -Raw |
+            ConvertFrom-Json
+
+          Write-Host "Pull requests loaded."
+
+
+          # --------------------------------------------------------
+          # WORK ITEMS
+          # --------------------------------------------------------
+
+          Write-Host "Loading work items..."
 
           $workItems = Get-Content `
             "$env:GITHUB_WORKSPACE\work_items.json" `
-            -Raw
+            -Raw |
+            ConvertFrom-Json
 
-          $releaseContext = @{
+          Write-Host "Work items loaded."
+
+
+          # --------------------------------------------------------
+          # BUILD LIGHTWEIGHT CONTEXT
+          # --------------------------------------------------------
+
+          Write-Host "Creating lightweight release context..."
+
+          $releaseContext = [ordered]@{
+
               repository = "${{ github.repository }}"
 
               branch = "${{ github.ref_name }}"
@@ -436,31 +488,49 @@ jobs:
 
               range_type = "${{ inputs.range_type }}"
 
-              range = @{
+              range = [ordered]@{
                   from = $from
                   to = $to
               }
 
               commits = $commits
 
-              pull_requests = ($pullRequests | ConvertFrom-Json)
+              pull_requests = $pullRequests
 
               changed_files = $changedFiles
 
               file_statistics = $fileStatistics
 
-              diff = $diff
-
-              work_items = ($workItems | ConvertFrom-Json)
+              work_items = $workItems
           }
 
-          $releaseContext |
-            ConvertTo-Json -Depth 30 |
+
+          # --------------------------------------------------------
+          # SERIALIZE
+          # --------------------------------------------------------
+
+          Write-Host "Serializing context..."
+
+          $json = $releaseContext |
+            ConvertTo-Json `
+              -Depth 15 `
+              -Compress
+
+          Write-Host "Context size: $($json.Length) characters"
+
+
+          # --------------------------------------------------------
+          # SAVE
+          # --------------------------------------------------------
+
+          $json |
             Out-File `
               "$env:GITHUB_WORKSPACE\release_context.json" `
               -Encoding utf8
 
+          Write-Host "=============================================="
           Write-Host "Release context created."
+          Write-Host "=============================================="
 
 
       # ============================================================

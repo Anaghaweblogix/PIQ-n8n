@@ -221,7 +221,7 @@ jobs:
 
 
       # ============================================================
-      # 7. COLLECT GIT DIFF
+      # 7. COLLECT GIT DIFF - SIZE LIMITED
       # ============================================================
 
       - name: Collect Git diff
@@ -233,21 +233,60 @@ jobs:
 
           Write-Host "Collecting Git diff..."
 
+          # --------------------------------------------------------
+          # Generate a reasonably sized diff
+          # --------------------------------------------------------
+
           git diff `
             --no-ext-diff `
-            --unified=50 `
+            --unified=20 `
             "$from" `
             "$to" |
+            Out-File `
+              "$env:GITHUB_WORKSPACE\release_diff_full.txt" `
+              -Encoding utf8
+
+          # --------------------------------------------------------
+          # Limit diff size before sending to Claude
+          # --------------------------------------------------------
+
+          $maxDiffCharacters = 250000
+
+          $fullDiff = Get-Content `
+            "$env:GITHUB_WORKSPACE\release_diff_full.txt" `
+            -Raw
+
+          $fullDiffLength = $fullDiff.Length
+
+          Write-Host "Full diff size: $fullDiffLength characters"
+
+          if ($fullDiffLength -gt $maxDiffCharacters) {
+
+              Write-Host "Diff exceeds limit."
+              Write-Host "Limiting diff to $maxDiffCharacters characters."
+
+              $diff = $fullDiff.Substring(
+                  0,
+                  $maxDiffCharacters
+              )
+
+              $diff += "`n`n"
+              $diff += "=================================================="
+              $diff += "`nDIFF TRUNCATED"
+              $diff += "`n=================================================="
+              $diff += "`nThe complete diff is available as a GitHub Actions artifact."
+          }
+          else {
+
+              $diff = $fullDiff
+          }
+
+          $diff |
             Out-File `
               "$env:GITHUB_WORKSPACE\release_diff.txt" `
               -Encoding utf8
 
-          $diff = Get-Content `
-            "$env:GITHUB_WORKSPACE\release_diff.txt" `
-            -Raw
-
-          Write-Host "Diff size: $($diff.Length) characters"
-
+          Write-Host "Diff sent to Claude: $($diff.Length) characters"
 
       # ============================================================
       # 8. EXTRACT JIRA / WORK ITEM REFERENCES

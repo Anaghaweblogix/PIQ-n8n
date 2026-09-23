@@ -25,9 +25,20 @@ jobs:
       - name: Prepare commit analysis
         shell: powershell -ExecutionPolicy Bypass -Command ". '{0}'"
         run: |
-          $commit = "${{ github.sha }}"
-          $parent = git rev-parse "${commit}^"
+          $ErrorActionPreference = "Stop"
 
+          # Mark the checked-out repository as safe for the
+          # Windows GitHub Actions service account
+          $repoPath = $env:GITHUB_WORKSPACE
+          
+          git config --global --add safe.directory "$repoPath"
+          
+          Write-Host "Repository marked as safe: $repoPath"
+          
+          $commit = "${{ github.sha }}"
+          
+          $parent = git rev-parse "${commit}^"
+          
           Write-Host "Commit: $commit"
           Write-Host "Parent: $parent"
 

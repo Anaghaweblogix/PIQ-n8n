@@ -32,6 +32,7 @@ permissions:
   contents: read
   pull-requests: read
 
+
 jobs:
 
   generate-release-notes:
@@ -64,11 +65,11 @@ jobs:
           Write-Host "       RELEASE NOTES GENERATION"
           Write-Host "=============================================="
 
-          Write-Host "Repository      : $env:GITHUB_REPOSITORY"
-          Write-Host "Range Type      : ${{ inputs.range_type }}"
+          Write-Host "Repository       : $env:GITHUB_REPOSITORY"
+          Write-Host "Range Type       : ${{ inputs.range_type }}"
           Write-Host "Previous Release : ${{ inputs.previous_release }}"
-          Write-Host "Target Ref      : ${{ inputs.target_ref }}"
-          Write-Host "Release Name    : ${{ inputs.release_name }}"
+          Write-Host "Target Ref       : ${{ inputs.target_ref }}"
+          Write-Host "Release Name     : ${{ inputs.release_name }}"
 
           Write-Host "=============================================="
 
@@ -102,6 +103,10 @@ jobs:
 
               git rev-parse "$previousRelease" | Out-Null
 
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Previous release/tag '$previousRelease' could not be found."
+              }
+
               $from = git rev-parse "$previousRelease"
               $to = git rev-parse "$targetRef"
           }
@@ -125,6 +130,11 @@ jobs:
               throw "Unknown range_type: $rangeType"
           }
 
+
+          # --------------------------------------------------------
+          # Validate
+          # --------------------------------------------------------
+
           if ([string]::IsNullOrWhiteSpace($from)) {
               throw "Unable to determine starting commit."
           }
@@ -133,16 +143,24 @@ jobs:
               throw "Unable to determine target commit."
           }
 
+
           Write-Host "FROM: $from"
           Write-Host "TO  : $to"
 
-          "from=$from" | Out-File `
-              -FilePath $env:GITHUB_OUTPUT `
-              -Append
 
-          "to=$to" | Out-File `
-              -FilePath $env:GITHUB_OUTPUT `
-              -Append
+          # --------------------------------------------------------
+          # Output values
+          # --------------------------------------------------------
+
+          "from=$from" |
+              Out-File `
+                -FilePath $env:GITHUB_OUTPUT `
+                -Append
+
+          "to=$to" |
+              Out-File `
+                -FilePath $env:GITHUB_OUTPUT `
+                -Append
 
 
       # ============================================================
@@ -155,27 +173,55 @@ jobs:
 
           $from = "${{ steps.git_range.outputs.from }}"
           $to = "${{ steps.git_range.outputs.to }}"
+          $rangeType = "${{ inputs.range_type }}"
 
           Write-Host "Collecting commits..."
 
-          git log "$from..$to" `
-            --pretty=format:'%H|%an|%ae|%ad|%s' `
-            --date=iso |
-            Out-File `
-              "$env:GITHUB_WORKSPACE\commits.txt" `
-              -Encoding utf8
+          # --------------------------------------------------------
+          # FROM BEGINNING
+          #
+          # Include the first/root commit as well.
+          # --------------------------------------------------------
 
-          $commitCount = git rev-list --count "$from..$to"
+          if ($rangeType -eq "from_beginning") {
+
+              git log "$to" `
+                --pretty=format:'%H|%an|%ae|%ad|%s' `
+                --date=iso |
+                Out-File `
+                  "$env:GITHUB_WORKSPACE\commits.txt" `
+                  -Encoding utf8
+
+              $commitCount = git rev-list --count "$to"
+          }
+
+          # --------------------------------------------------------
+          # PREVIOUS RELEASE
+          # --------------------------------------------------------
+
+          else {
+
+              git log "$from..$to" `
+                --pretty=format:'%H|%an|%ae|%ad|%s' `
+                --date=iso |
+                Out-File `
+                  "$env:GITHUB_WORKSPACE\commits.txt" `
+                  -Encoding utf8
+
+              $commitCount = git rev-list --count "$from..$to"
+          }
+
 
           Write-Host "Commit count: $commitCount"
+
 
           @{
               count = [int]$commitCount
           } |
           ConvertTo-Json |
           Out-File `
-              "$env:GITHUB_WORKSPACE\commit_stats.json" `
-              -Encoding utf8
+            "$env:GITHUB_WORKSPACE\commit_stats.json" `
+            -Encoding utf8
 
 
       # ============================================================
@@ -199,6 +245,8 @@ jobs:
               "$env:GITHUB_WORKSPACE\changed_files.txt" `
               -Encoding utf8
 
+          Write-Host "Changed files collected."
+
 
       # ============================================================
       # 6. COLLECT FILE STATISTICS
@@ -211,6 +259,8 @@ jobs:
           $from = "${{ steps.git_range.outputs.from }}"
           $to = "${{ steps.git_range.outputs.to }}"
 
+          Write-Host "Collecting file statistics..."
+
           git diff `
             --stat `
             "$from" `
@@ -219,77 +269,11 @@ jobs:
               "$env:GITHUB_WORKSPACE\file_statistics.txt" `
               -Encoding utf8
 
+          Write-Host "File statistics collected."
+
 
       # ============================================================
-      # 7. COLLECT GIT DIFF - SIZE LIMITED
-      # ============================================================
-
-      - name: Collect Git diff
-        shell: powershell
-        run: |
-
-          $from = "${{ steps.git_range.outputs.from }}"
-          $to = "${{ steps.git_range.outputs.to }}"
-
-          Write-Host "Collecting Git diff..."
-
-          # --------------------------------------------------------
-          # Generate a reasonably sized diff
-          # --------------------------------------------------------
-
-          git diff `
-            --no-ext-diff `
-            --unified=20 `
-            "$from" `
-            "$to" |
-            Out-File `
-              "$env:GITHUB_WORKSPACE\release_diff_full.txt" `
-              -Encoding utf8
-
-          # --------------------------------------------------------
-          # Limit diff size before sending to Claude
-          # --------------------------------------------------------
-
-          $maxDiffCharacters = 250000
-
-          $fullDiff = Get-Content `
-            "$env:GITHUB_WORKSPACE\release_diff_full.txt" `
-            -Raw
-
-          $fullDiffLength = $fullDiff.Length
-
-          Write-Host "Full diff size: $fullDiffLength characters"
-
-          if ($fullDiffLength -gt $maxDiffCharacters) {
-
-              Write-Host "Diff exceeds limit."
-              Write-Host "Limiting diff to $maxDiffCharacters characters."
-
-              $diff = $fullDiff.Substring(
-                  0,
-                  $maxDiffCharacters
-              )
-
-              $diff += "`n`n"
-              $diff += "=================================================="
-              $diff += "`nDIFF TRUNCATED"
-              $diff += "`n=================================================="
-              $diff += "`nThe complete diff is available as a GitHub Actions artifact."
-          }
-          else {
-
-              $diff = $fullDiff
-          }
-
-          $diff |
-            Out-File `
-              "$env:GITHUB_WORKSPACE\release_diff.txt" `
-              -Encoding utf8
-
-          Write-Host "Diff sent to Claude: $($diff.Length) characters"
-
-      # ============================================================
-      # 8. EXTRACT JIRA / WORK ITEM REFERENCES
+      # 7. EXTRACT WORK ITEM REFERENCES
       # ============================================================
 
       - name: Extract work item references
@@ -298,17 +282,45 @@ jobs:
 
           $from = "${{ steps.git_range.outputs.from }}"
           $to = "${{ steps.git_range.outputs.to }}"
+          $rangeType = "${{ inputs.range_type }}"
 
           Write-Host "Extracting work-item references..."
 
-          $commitMessages = git log `
-            "$from..$to" `
-            --pretty=format:'%s%n%b'
+
+          # --------------------------------------------------------
+          # Get commit messages
+          # --------------------------------------------------------
+
+          if ($rangeType -eq "from_beginning") {
+
+              $commitMessages = git log `
+                "$to" `
+                --pretty=format:'%s%n%b'
+          }
+
+          else {
+
+              $commitMessages = git log `
+                "$from..$to" `
+                --pretty=format:'%s%n%b'
+          }
+
+
+          # --------------------------------------------------------
+          # Extract Jira / work-item references
+          #
+          # Example:
+          #
+          # PROJ-123
+          # PIQ-456
+          # DEV-789
+          # --------------------------------------------------------
 
           $matches = [regex]::Matches(
               ($commitMessages -join "`n"),
               '\b[A-Z][A-Z0-9]+-\d+\b'
           )
+
 
           $workItems = $matches |
               ForEach-Object {
@@ -316,23 +328,38 @@ jobs:
               } |
               Sort-Object -Unique
 
+
+          # --------------------------------------------------------
+          # Save
+          # --------------------------------------------------------
+
           $workItems |
             ConvertTo-Json |
             Out-File `
               "$env:GITHUB_WORKSPACE\work_items.json" `
               -Encoding utf8
 
+
           Write-Host "Detected work items:"
 
-          $workItems | ForEach-Object {
-              Write-Host " - $_"
+          if ($workItems.Count -eq 0) {
+
+              Write-Host "None"
+
+          }
+          else {
+
+              $workItems | ForEach-Object {
+                  Write-Host " - $_"
+              }
           }
 
 
       # ============================================================
-      # 9. COLLECT RELEASE PULL REQUESTS
-      #    Optimized: one GitHub query instead of one API call
-      #    per commit.
+      # 8. COLLECT RELEASE PULL REQUESTS
+      #
+      # Optimized version:
+      # Get merged PRs once and filter locally.
       # ============================================================
 
       - name: Collect release pull requests
@@ -345,10 +372,12 @@ jobs:
           Write-Host "Collecting release pull requests..."
           Write-Host "=============================================="
 
+
           $from = "${{ steps.git_range.outputs.from }}"
           $to = "${{ steps.git_range.outputs.to }}"
           $repo = "${{ github.repository }}"
           $targetRef = "${{ inputs.target_ref }}"
+
 
           Write-Host "Repository : $repo"
           Write-Host "FROM       : $from"
@@ -359,56 +388,50 @@ jobs:
           # --------------------------------------------------------
           # Determine base branch
           # --------------------------------------------------------
-          #
-          # For normal usage target_ref will be something like:
-          #
-          # main
-          #
-          # If target_ref is a tag/commit, use the repository's
-          # default branch instead.
-          # --------------------------------------------------------
 
           $baseBranch = $targetRef
 
-          git show-ref --verify --quiet "refs/remotes/origin/$targetRef"
+
+          git show-ref `
+            --verify `
+            --quiet `
+            "refs/remotes/origin/$targetRef"
+
 
           if ($LASTEXITCODE -ne 0) {
 
               Write-Host "Target ref is not a branch."
 
               $baseBranch = gh repo view "$repo" `
-                  --json defaultBranchRef `
-                  --jq ".defaultBranchRef.name"
+                --json defaultBranchRef `
+                --jq ".defaultBranchRef.name"
 
               Write-Host "Using default branch: $baseBranch"
           }
 
 
           # --------------------------------------------------------
-          # Get merged PRs for the target branch
-          #
-          # IMPORTANT:
-          # This makes one GitHub CLI/API operation rather than
-          # querying GitHub separately for every commit.
+          # Retrieve merged PRs
           # --------------------------------------------------------
 
           Write-Host "Getting merged PRs..."
 
           $prJson = gh pr list `
-              --repo "$repo" `
-              --state merged `
-              --base "$baseBranch" `
-              --limit 1000 `
-              --json number,title,body,author,mergedAt,baseRefName,headRefName,labels,url,mergeCommit
+            --repo "$repo" `
+            --state merged `
+            --base "$baseBranch" `
+            --limit 1000 `
+            --json number,title,body,author,mergedAt,baseRefName,headRefName,labels,url,mergeCommit
+
 
           if (-not $prJson) {
 
               Write-Host "No merged PRs found."
 
               "[]" |
-                  Out-File `
-                    "$env:GITHUB_WORKSPACE\pull_requests.json" `
-                    -Encoding utf8
+                Out-File `
+                  "$env:GITHUB_WORKSPACE\pull_requests.json" `
+                  -Encoding utf8
 
               exit 0
           }
@@ -416,19 +439,16 @@ jobs:
 
           $allPRs = $prJson | ConvertFrom-Json
 
+
           Write-Host "Merged PRs retrieved: $($allPRs.Count)"
 
 
           # --------------------------------------------------------
-          # Filter PRs by the selected Git range
-          #
-          # A PR belongs to the release if its merge commit is
-          # inside:
-          #
-          # FROM → TO
+          # Filter PRs by Git range
           # --------------------------------------------------------
 
           $releasePRs = @()
+
 
           foreach ($pr in $allPRs) {
 
@@ -436,26 +456,39 @@ jobs:
                   continue
               }
 
+
               $mergeSha = $pr.mergeCommit.oid
+
 
               if ([string]::IsNullOrWhiteSpace($mergeSha)) {
                   continue
               }
 
+
+              # ----------------------------------------------------
               # Check:
               #
-              # Is FROM an ancestor of the PR merge commit?
+              # FROM is ancestor of PR merge
               #
               # AND
               #
-              # Is the PR merge commit an ancestor of TO?
-              #
+              # PR merge is ancestor of TO
+              # ----------------------------------------------------
 
-              git merge-base --is-ancestor "$from" "$mergeSha"
+              git merge-base `
+                --is-ancestor `
+                "$from" `
+                "$mergeSha"
+
 
               $fromIsAncestor = ($LASTEXITCODE -eq 0)
 
-              git merge-base --is-ancestor "$mergeSha" "$to"
+
+              git merge-base `
+                --is-ancestor `
+                "$mergeSha" `
+                "$to"
+
 
               $mergeIsBeforeTarget = ($LASTEXITCODE -eq 0)
 
@@ -470,7 +503,7 @@ jobs:
 
 
           # --------------------------------------------------------
-          # Sort by merged date
+          # Sort PRs
           # --------------------------------------------------------
 
           $releasePRs = @(
@@ -489,17 +522,20 @@ jobs:
           # --------------------------------------------------------
 
           $releasePRs |
-              ConvertTo-Json -Depth 20 |
-              Out-File `
-                "$env:GITHUB_WORKSPACE\pull_requests.json" `
-                -Encoding utf8
+            ConvertTo-Json -Depth 20 |
+            Out-File `
+              "$env:GITHUB_WORKSPACE\pull_requests.json" `
+              -Encoding utf8
 
 
           Write-Host "Pull request data saved."
 
 
-            # ============================================================
-      # 10. BUILD RELEASE CONTEXT
+      # ============================================================
+      # 9. BUILD RELEASE CONTEXT
+      #
+      # IMPORTANT:
+      # This uses plain text instead of ConvertTo-Json.
       # ============================================================
 
       - name: Build release context
@@ -510,133 +546,159 @@ jobs:
           Write-Host "Building release context..."
           Write-Host "=============================================="
 
+
           $from = "${{ steps.git_range.outputs.from }}"
           $to = "${{ steps.git_range.outputs.to }}"
 
+
           # --------------------------------------------------------
-          # Read Git information
+          # Read commits
           # --------------------------------------------------------
 
           Write-Host "Loading commits..."
+
 
           $commits = Get-Content `
             "$env:GITHUB_WORKSPACE\commits.txt" `
             -Raw
 
+
           Write-Host "Commits loaded: $($commits.Length) characters"
 
 
+          # --------------------------------------------------------
+          # Read changed files
+          # --------------------------------------------------------
+
           Write-Host "Loading changed files..."
+
 
           $changedFiles = Get-Content `
             "$env:GITHUB_WORKSPACE\changed_files.txt" `
             -Raw
 
+
           Write-Host "Changed files loaded: $($changedFiles.Length) characters"
 
 
+          # --------------------------------------------------------
+          # Read file statistics
+          # --------------------------------------------------------
+
           Write-Host "Loading file statistics..."
+
 
           $fileStatistics = Get-Content `
             "$env:GITHUB_WORKSPACE\file_statistics.txt" `
             -Raw
 
+
           Write-Host "File statistics loaded: $($fileStatistics.Length) characters"
 
 
+          # --------------------------------------------------------
+          # Read pull requests
+          # --------------------------------------------------------
+
           Write-Host "Loading pull requests..."
+
 
           $pullRequests = Get-Content `
             "$env:GITHUB_WORKSPACE\pull_requests.json" `
             -Raw
 
+
           Write-Host "Pull requests loaded: $($pullRequests.Length) characters"
 
 
+          # --------------------------------------------------------
+          # Read work items
+          # --------------------------------------------------------
+
           Write-Host "Loading work items..."
+
 
           $workItems = Get-Content `
             "$env:GITHUB_WORKSPACE\work_items.json" `
             -Raw
+
 
           Write-Host "Work items loaded: $($workItems.Length) characters"
 
 
           # --------------------------------------------------------
           # Build plain-text context
+          #
+          # No PowerShell here-string.
+          # This avoids the indentation issue.
           # --------------------------------------------------------
 
           Write-Host "Creating plain-text release context..."
 
 
-          $context = @"
-              ============================================================
-              RELEASE INFORMATION
-              ============================================================
-              
-              Repository:
-              ${{ github.repository }}
-              
-              Branch:
-              ${{ github.ref_name }}
-              
-              Release:
-              ${{ inputs.release_name }}
-              
-              Range Type:
-              ${{ inputs.range_type }}
-              
-              Previous Release:
-              ${{ inputs.previous_release }}
-              
-              Target Ref:
-              ${{ inputs.target_ref }}
-              
-              FROM COMMIT:
-              $from
-              
-              TO COMMIT:
-              $to
-              
-              
-              ============================================================
-              COMMITS
-              ============================================================
-              
-              $commits
-              
-              
-              ============================================================
-              PULL REQUESTS
-              ============================================================
-              
-              $pullRequests
-              
-              
-              ============================================================
-              CHANGED FILES
-              ============================================================
-              
-              $changedFiles
-              
-              
-              ============================================================
-              FILE STATISTICS
-              ============================================================
-              
-              $fileStatistics
-              
-              
-              ============================================================
-              WORK ITEMS
-              ============================================================
-              
-              $workItems
-              
-              ============================================================
-              END RELEASE CONTEXT
-              ============================================================
-              "@
+          $contextParts = @()
+
+
+          $contextParts += "============================================================"
+          $contextParts += "RELEASE INFORMATION"
+          $contextParts += "============================================================"
+          $contextParts += ""
+          $contextParts += "Repository: ${{ github.repository }}"
+          $contextParts += "Branch: ${{ github.ref_name }}"
+          $contextParts += "Release: ${{ inputs.release_name }}"
+          $contextParts += "Range Type: ${{ inputs.range_type }}"
+          $contextParts += "Previous Release: ${{ inputs.previous_release }}"
+          $contextParts += "Target Ref: ${{ inputs.target_ref }}"
+          $contextParts += ""
+          $contextParts += "FROM COMMIT:"
+          $contextParts += $from
+          $contextParts += ""
+          $contextParts += "TO COMMIT:"
+          $contextParts += $to
+          $contextParts += ""
+
+
+          $contextParts += "============================================================"
+          $contextParts += "COMMITS"
+          $contextParts += "============================================================"
+          $contextParts += $commits
+          $contextParts += ""
+
+
+          $contextParts += "============================================================"
+          $contextParts += "PULL REQUESTS"
+          $contextParts += "============================================================"
+          $contextParts += $pullRequests
+          $contextParts += ""
+
+
+          $contextParts += "============================================================"
+          $contextParts += "CHANGED FILES"
+          $contextParts += "============================================================"
+          $contextParts += $changedFiles
+          $contextParts += ""
+
+
+          $contextParts += "============================================================"
+          $contextParts += "FILE STATISTICS"
+          $contextParts += "============================================================"
+          $contextParts += $fileStatistics
+          $contextParts += ""
+
+
+          $contextParts += "============================================================"
+          $contextParts += "WORK ITEMS"
+          $contextParts += "============================================================"
+          $contextParts += $workItems
+          $contextParts += ""
+
+
+          $contextParts += "============================================================"
+          $contextParts += "END RELEASE CONTEXT"
+          $contextParts += "============================================================"
+
+
+          $context = $contextParts -join "`r`n"
 
 
           # --------------------------------------------------------
@@ -656,7 +718,7 @@ jobs:
 
 
       # ============================================================
-      # 11. CLAUDE ANALYSIS
+      # 10. GENERATE RELEASE NOTES WITH CLAUDE
       # ============================================================
 
       - name: Generate release notes with Claude
@@ -669,361 +731,427 @@ jobs:
           Write-Host "       CLAUDE RELEASE ANALYSIS"
           Write-Host "=============================================="
 
+
+          # --------------------------------------------------------
+          # Load context
+          # --------------------------------------------------------
+
           $context = Get-Content `
             "$env:GITHUB_WORKSPACE\release_context.txt" `
             -Raw
 
-          $prompt = @"
-          You are generating professional software release notes.
-          
-          Analyze ONLY the supplied Git repository information.
-          
-          Do not invent functionality, changes, fixes, features,
-          work items, API changes, database changes, or breaking changes.
-          
-          ============================================================
-          RELEASE INFORMATION
-          ============================================================
-          
-          Repository:
-          ${{ github.repository }}
-          
-          Release:
-          ${{ inputs.release_name }}
-          
-          Range Type:
-          ${{ inputs.range_type }}
-          
-          Previous Release:
-          ${{ inputs.previous_release }}
-          
-          Target:
-          ${{ inputs.target_ref }}
-          
-          ============================================================
-          REPOSITORY CHANGE CONTEXT
-          ============================================================
-          
-          $context
-          
-          ============================================================
-          REQUIRED OUTPUT
-          ============================================================
-          
-          Return ONLY valid JSON.
-          
-          Use exactly this structure:
-          
-          {
-            "release": {
-              "name": "",
-              "from": "",
-              "to": ""
-            },
-          
-            "summary": "",
-          
-            "features": [
-              {
-                "title": "",
-                "description": "",
-                "work_items": [],
-                "commits": [],
-                "pull_requests": []
+
+          Write-Host "Claude context size: $($context.Length) characters"
+
+
+          # --------------------------------------------------------
+          # Build prompt
+          #
+          # No PowerShell here-string.
+          # --------------------------------------------------------
+
+          $promptParts = @()
+
+
+          $promptParts += "You are generating professional software release notes."
+          $promptParts += ""
+          $promptParts += "Analyze ONLY the supplied Git repository information."
+          $promptParts += ""
+          $promptParts += "Do not invent functionality, changes, fixes, features,"
+          $promptParts += "work items, API changes, database changes, or breaking changes."
+          $promptParts += ""
+
+
+          $promptParts += "============================================================"
+          $promptParts += "RELEASE INFORMATION"
+          $promptParts += "============================================================"
+          $promptParts += ""
+          $promptParts += "Repository: ${{ github.repository }}"
+          $promptParts += "Release: ${{ inputs.release_name }}"
+          $promptParts += "Range Type: ${{ inputs.range_type }}"
+          $promptParts += "Previous Release: ${{ inputs.previous_release }}"
+          $promptParts += "Target: ${{ inputs.target_ref }}"
+          $promptParts += ""
+
+
+          $promptParts += "============================================================"
+          $promptParts += "REPOSITORY CHANGE CONTEXT"
+          $promptParts += "============================================================"
+          $promptParts += ""
+          $promptParts += $context
+          $promptParts += ""
+
+
+          $promptParts += "============================================================"
+          $promptParts += "REQUIRED OUTPUT"
+          $promptParts += "============================================================"
+          $promptParts += ""
+
+
+          $promptParts += "Return ONLY valid JSON."
+          $promptParts += ""
+          $promptParts += "Use exactly this structure:"
+          $promptParts += ""
+
+
+          $promptParts += '{'
+          $promptParts += '  "release": {'
+          $promptParts += '    "name": "",'
+          $promptParts += '    "from": "",'
+          $promptParts += '    "to": ""'
+          $promptParts += '  },'
+          $promptParts += '  "summary": "",'
+          $promptParts += '  "features": [],'
+          $promptParts += '  "enhancements": [],'
+          $promptParts += '  "bug_fixes": [],'
+          $promptParts += '  "api_changes": [],'
+          $promptParts += '  "database_changes": [],'
+          $promptParts += '  "configuration_changes": [],'
+          $promptParts += '  "breaking_changes": [],'
+          $promptParts += '  "technical_changes": [],'
+          $promptParts += '  "work_items": [],'
+          $promptParts += '  "statistics": {'
+          $promptParts += '    "commits": 0,'
+          $promptParts += '    "pull_requests": 0,'
+          $promptParts += '    "files_changed": 0'
+          $promptParts += '  }'
+          $promptParts += '}'
+
+
+          $promptParts += ""
+          $promptParts += "============================================================"
+          $promptParts += "RULES"
+          $promptParts += "============================================================"
+          $promptParts += ""
+
+
+          $promptParts += "1. Use commit messages, pull requests, changed files,"
+          $promptParts += "   file statistics and work-item references as evidence."
+
+
+          $promptParts += "2. Do not claim a feature exists unless the supplied"
+          $promptParts += "   information supports it."
+
+
+          $promptParts += "3. Do not assume that mentioning a work-item ID means"
+          $promptParts += "   the entire work item was completed."
+
+
+          $promptParts += "4. Group related commits into meaningful release-note entries."
+
+
+          $promptParts += "5. Write the release notes in clear business language."
+
+
+          $promptParts += "6. Put implementation-level changes under"
+          $promptParts += "   technical_changes unless they directly affect"
+          $promptParts += "   application behaviour."
+
+
+          $promptParts += "7. Identify API changes only when supported by the"
+          $promptParts += "   supplied changes."
+
+
+          $promptParts += "8. Identify database changes only when supported by"
+          $promptParts += "   the supplied changes."
+
+
+          $promptParts += "9. Identify breaking changes only when there is"
+          $promptParts += "   actual evidence."
+
+
+          $promptParts += "10. Empty categories must be returned as []."
+
+
+          $promptParts += "11. The summary should describe the overall release"
+          $promptParts += "    based only on the supplied evidence."
+
+
+          $promptParts += "12. Every significant release-note item should"
+          $promptParts += "    reference its supporting commit or PR where possible."
+
+
+          $promptParts += "13. Return ONLY valid JSON."
+
+
+          $prompt = $promptParts -join "`r`n"
+
+
+          # --------------------------------------------------------
+          # Build Claude API request
+          # --------------------------------------------------------
+
+          $body = @{
+              model = "claude-sonnet-5"
+
+              max_tokens = 16000
+
+              messages = @(
+                  @{
+                      role = "user"
+                      content = $prompt
+                  }
+              )
+          } |
+          ConvertTo-Json -Depth 30
+
+
+          Write-Host "Sending request to Claude..."
+
+
+          # --------------------------------------------------------
+          # Call Claude
+          # --------------------------------------------------------
+
+          $response = Invoke-RestMethod `
+            -Uri "https://api.anthropic.com/v1/messages" `
+            -Method Post `
+            -Headers @{
+                "x-api-key" = $env:ANTHROPIC_API_KEY
+                "anthropic-version" = "2023-06-01"
+                "content-type" = "application/json"
+            } `
+            -Body $body
+
+
+          Write-Host "Claude response received."
+
+
+          # --------------------------------------------------------
+          # Token usage
+          # --------------------------------------------------------
+
+          $inputTokens = $response.usage.input_tokens
+          $outputTokens = $response.usage.output_tokens
+          $totalTokens = $inputTokens + $outputTokens
+
+
+          Write-Host "Input tokens : $inputTokens"
+          Write-Host "Output tokens: $outputTokens"
+          Write-Host "Total tokens : $totalTokens"
+
+
+          @{
+              input_tokens = $inputTokens
+              output_tokens = $outputTokens
+              total_tokens = $totalTokens
+          } |
+          ConvertTo-Json |
+          Out-File `
+            "$env:GITHUB_WORKSPACE\token_usage.json" `
+            -Encoding utf8
+
+
+          # --------------------------------------------------------
+          # Extract Claude response
+          # --------------------------------------------------------
+
+          $text = (
+              $response.content |
+              Where-Object {
+                  $_.type -eq "text"
               }
-            ],
-          
-            "enhancements": [
-              {
-                "title": "",
-                "description": "",
-                "work_items": [],
-                "commits": [],
-                "pull_requests": []
-              }
-            ],
-          
-            "bug_fixes": [
-              {
-                "title": "",
-                "description": "",
-                "work_items": [],
-                "commits": [],
-                "pull_requests": []
-              }
-            ],
-          
-            "api_changes": [],
-          
-            "database_changes": [],
-          
-            "configuration_changes": [],
-          
-            "breaking_changes": [],
-          
-            "technical_changes": [],
-          
-            "work_items": [],
-          
-            "statistics": {
-              "commits": 0,
-              "pull_requests": 0,
-              "files_changed": 0
-            }
+          ).text
+
+
+          if (-not $text) {
+              throw "Claude returned an empty response."
           }
-          
-          ============================================================
-          RULES
-          ============================================================
-          
-          1. Use commit messages, pull requests, changed files and diffs
-             as evidence.
-          
-          2. Do not claim a feature exists unless the supplied information
-             supports it.
-          
-          3. Do not assume that mentioning a work-item ID means the entire
-             work item was completed.
-          
-          4. Group related commits into meaningful release-note entries.
-          
-          5. Write the release notes in clear business language.
-          
-          6. Put implementation-level changes under technical_changes
-             unless they directly affect application behaviour.
-          
-          7. Identify API changes only when supported by the supplied
-             changes.
-          
-          8. Identify database changes only when supported by the supplied
-             changes.
-          
-          9. Identify breaking changes only when there is actual evidence.
-          
-          10. Empty categories must be returned as [].
-          
-          11. The summary should describe the overall release based only
-              on the supplied evidence.
-          
-          12. Every significant release-note item should reference its
-              supporting commit or PR where possible.
-          
-          13. Return ONLY valid JSON.
-          "@
-          
-                    # --------------------------------------------------------
-                    # Build request
-                    # --------------------------------------------------------
-          
-                    $body = @{
-                        model = "claude-sonnet-5"
-          
-                        max_tokens = 16000
-          
-                        messages = @(
-                            @{
-                                role = "user"
-                                content = $prompt
-                            }
-                        )
-                    } |
-                    ConvertTo-Json -Depth 30
-          
-                    # --------------------------------------------------------
-                    # Call Claude
-                    # --------------------------------------------------------
-          
-                    $response = Invoke-RestMethod `
-                      -Uri "https://api.anthropic.com/v1/messages" `
-                      -Method Post `
-                      -Headers @{
-                          "x-api-key" = $env:ANTHROPIC_API_KEY
-                          "anthropic-version" = "2023-06-01"
-                          "content-type" = "application/json"
-                      } `
-                      -Body $body
-          
-                    Write-Host "Claude response received."
-          
-                    # --------------------------------------------------------
-                    # Token usage
-                    # --------------------------------------------------------
-          
-                    $inputTokens = $response.usage.input_tokens
-                    $outputTokens = $response.usage.output_tokens
-                    $totalTokens = $inputTokens + $outputTokens
-          
-                    Write-Host "Input tokens : $inputTokens"
-                    Write-Host "Output tokens: $outputTokens"
-                    Write-Host "Total tokens : $totalTokens"
-          
-                    @{
-                        input_tokens = $inputTokens
-                        output_tokens = $outputTokens
-                        total_tokens = $totalTokens
-                    } |
-                    ConvertTo-Json |
-                    Out-File `
-                      "$env:GITHUB_WORKSPACE\token_usage.json" `
-                      -Encoding utf8
-          
-                    # --------------------------------------------------------
-                    # Extract Claude text
-                    # --------------------------------------------------------
-          
-                    $text = (
-                        $response.content |
-                        Where-Object {
-                            $_.type -eq "text"
-                        }
-                    ).text
-          
-                    if (-not $text) {
-                        throw "Claude returned an empty response."
-                    }
-          
-                    $text = $text.Trim()
-          
-                    # Remove Markdown JSON fences if present
-                    $text = $text -replace '^```json\s*', ''
-                    $text = $text -replace '^```\s*', ''
-                    $text = $text -replace '\s*```$', ''
-          
-                    # --------------------------------------------------------
-                    # Validate JSON immediately
-                    # --------------------------------------------------------
-          
-                    try {
-          
-                        $releaseNotesObject = $text | ConvertFrom-Json
-          
-                    }
-                    catch {
-          
-                        Write-Host "Claude returned invalid JSON:"
-                        Write-Host $text
-          
-                        throw "Claude response is not valid JSON."
-                    }
-          
-                    # Save formatted JSON
-                    $releaseNotesObject |
-                      ConvertTo-Json -Depth 30 |
-                      Out-File `
-                        "$env:GITHUB_WORKSPACE\release_notes.json" `
-                        -Encoding utf8
-          
-                    Write-Host "Release notes JSON validated successfully."
-          
-          
-                # ============================================================
-                # 12. BUILD FINAL N8N PAYLOAD
-                # ============================================================
-          
-                - name: Build n8n payload
-                  shell: powershell
-                  run: |
-          
-                    Write-Host "Building final n8n payload..."
-          
-                    $releaseNotes = Get-Content `
-                      "$env:GITHUB_WORKSPACE\release_notes.json" `
-                      -Raw |
-                      ConvertFrom-Json
-          
-                    $releaseContext = Get-Content `
-                      "$env:GITHUB_WORKSPACE\release_context.txt" `
-                      -Raw |
-                      ConvertFrom-Json
-          
-                    $tokenUsage = Get-Content `
-                      "$env:GITHUB_WORKSPACE\token_usage.json" `
-                      -Raw |
-                      ConvertFrom-Json
-          
-                    $payload = @{
-                        status = "completed"
-          
-                        repository = "${{ github.repository }}"
-          
-                        workflow = "${{ github.workflow }}"
-          
-                        run_id = "${{ github.run_id }}"
-          
-                        run_number = "${{ github.run_number }}"
-          
-                        release = @{
-                            name = "${{ inputs.release_name }}"
-                            range_type = "${{ inputs.range_type }}"
-                            previous_release = "${{ inputs.previous_release }}"
-                            target_ref = "${{ inputs.target_ref }}"
-                            from = "${{ steps.git_range.outputs.from }}"
-                            to = "${{ steps.git_range.outputs.to }}"
-                        }
-          
-                        release_notes = $releaseNotes
-          
-                        release_context = $releaseContext
-          
-                        token_usage = $tokenUsage
-                    }
-          
-                    $payload |
-                      ConvertTo-Json -Depth 50 |
-                      Out-File `
-                        "$env:GITHUB_WORKSPACE\n8n_payload.json" `
-                        -Encoding utf8
-          
-                    Write-Host "n8n payload created."
-          
-          
-                # ============================================================
-                # 13. SEND RESULT TO N8N
-                # ============================================================
-          
-                - name: Send release notes to n8n
-                  env:
-                    N8N_WEBHOOK_URL: ${{ secrets.N8N_RELEASE_NOTES_WEBHOOK_URL }}
-                  shell: powershell
-                  run: |
-          
-                    if ([string]::IsNullOrWhiteSpace($env:N8N_WEBHOOK_URL)) {
-                        throw "N8N_RELEASE_NOTES_WEBHOOK_URL secret is not configured."
-                    }
-          
-                    Write-Host "Sending release notes to n8n..."
-          
-                    $payload = Get-Content `
-                      "$env:GITHUB_WORKSPACE\n8n_payload.json" `
-                      -Raw
-          
-                    $result = Invoke-RestMethod `
-                      -Uri $env:N8N_WEBHOOK_URL `
-                      -Method Post `
-                      -ContentType "application/json" `
-                      -Body $payload `
-                      -TimeoutSec 60
-          
-                    Write-Host "Successfully sent release notes to n8n."
-          
-          
-                # ============================================================
-                # 14. UPLOAD ARTIFACTS
-                # ============================================================
-          
-                - name: Upload release analysis
-                  uses: actions/upload-artifact@v4
-                  with:
-                    name: release-notes-${{ github.run_number }}
-                    path: |
-                      release_notes.json
-                      release_context.txt
-                      commits.txt
-                      changed_files.txt
-                      file_statistics.txt
-                      release_diff.txt
-                      pull_requests.json
-                      work_items.json
-                      token_usage.json
-                      n8n_payload.json
-                    retention-days: 90
+
+
+          $text = $text.Trim()
+
+
+          # --------------------------------------------------------
+          # Remove Markdown JSON fences
+          # --------------------------------------------------------
+
+          $text = $text -replace '^```json\s*', ''
+          $text = $text -replace '^```\s*', ''
+          $text = $text -replace '\s*```$', ''
+
+          $text = $text.Trim()
+
+
+          # --------------------------------------------------------
+          # Validate JSON
+          # --------------------------------------------------------
+
+          try {
+
+              $releaseNotesObject = $text |
+                ConvertFrom-Json
+
+          }
+          catch {
+
+              Write-Host "=============================================="
+              Write-Host "CLAUDE RETURNED INVALID JSON"
+              Write-Host "=============================================="
+
+              Write-Host $text
+
+              throw "Claude response is not valid JSON."
+          }
+
+
+          # --------------------------------------------------------
+          # Save release notes
+          # --------------------------------------------------------
+
+          $releaseNotesObject |
+            ConvertTo-Json -Depth 30 |
+            Out-File `
+              "$env:GITHUB_WORKSPACE\release_notes.json" `
+              -Encoding utf8
+
+
+          Write-Host "Release notes JSON validated successfully."
+
+
+      # ============================================================
+      # 11. BUILD FINAL N8N PAYLOAD
+      # ============================================================
+
+      - name: Build n8n payload
+        shell: powershell
+        run: |
+
+          Write-Host "Building final n8n payload..."
+
+
+          # --------------------------------------------------------
+          # Release notes
+          # --------------------------------------------------------
+
+          $releaseNotes = Get-Content `
+            "$env:GITHUB_WORKSPACE\release_notes.json" `
+            -Raw |
+            ConvertFrom-Json
+
+
+          # --------------------------------------------------------
+          # Release context
+          #
+          # IMPORTANT:
+          # This is TEXT, NOT JSON.
+          # --------------------------------------------------------
+
+          $releaseContext = Get-Content `
+            "$env:GITHUB_WORKSPACE\release_context.txt" `
+            -Raw
+
+
+          # --------------------------------------------------------
+          # Token usage
+          # --------------------------------------------------------
+
+          $tokenUsage = Get-Content `
+            "$env:GITHUB_WORKSPACE\token_usage.json" `
+            -Raw |
+            ConvertFrom-Json
+
+
+          # --------------------------------------------------------
+          # Build payload
+          # --------------------------------------------------------
+
+          $payload = @{
+              status = "completed"
+
+              repository = "${{ github.repository }}"
+
+              workflow = "${{ github.workflow }}"
+
+              run_id = "${{ github.run_id }}"
+
+              run_number = "${{ github.run_number }}"
+
+              release = @{
+                  name = "${{ inputs.release_name }}"
+                  range_type = "${{ inputs.range_type }}"
+                  previous_release = "${{ inputs.previous_release }}"
+                  target_ref = "${{ inputs.target_ref }}"
+                  from = "${{ steps.git_range.outputs.from }}"
+                  to = "${{ steps.git_range.outputs.to }}"
+              }
+
+              release_notes = $releaseNotes
+
+              release_context = $releaseContext
+
+              token_usage = $tokenUsage
+          }
+
+
+          # --------------------------------------------------------
+          # Save payload
+          # --------------------------------------------------------
+
+          $payload |
+            ConvertTo-Json -Depth 30 |
+            Out-File `
+              "$env:GITHUB_WORKSPACE\n8n_payload.json" `
+              -Encoding utf8
+
+
+          Write-Host "n8n payload created."
+
+
+      # ============================================================
+      # 12. SEND RESULT TO N8N
+      # ============================================================
+
+      - name: Send release notes to n8n
+        env:
+          N8N_WEBHOOK_URL: ${{ secrets.N8N_RELEASE_NOTES_WEBHOOK_URL }}
+        shell: powershell
+        run: |
+
+          if ([string]::IsNullOrWhiteSpace($env:N8N_WEBHOOK_URL)) {
+
+              throw "N8N_RELEASE_NOTES_WEBHOOK_URL secret is not configured."
+          }
+
+
+          Write-Host "Sending release notes to n8n..."
+
+
+          $payload = Get-Content `
+            "$env:GITHUB_WORKSPACE\n8n_payload.json" `
+            -Raw
+
+
+          $result = Invoke-RestMethod `
+            -Uri $env:N8N_WEBHOOK_URL `
+            -Method Post `
+            -ContentType "application/json" `
+            -Body $payload `
+            -TimeoutSec 60
+
+
+          Write-Host "Successfully sent release notes to n8n."
+
+
+      # ============================================================
+      # 13. UPLOAD ARTIFACTS
+      # ============================================================
+
+      - name: Upload release analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes-${{ github.run_number }}
+
+          path: |
+            release_notes.json
+            release_context.txt
+            commits.txt
+            changed_files.txt
+            file_statistics.txt
+            pull_requests.json
+            work_items.json
+            commit_stats.json
+            token_usage.json
+            n8n_payload.json
+
+          retention-days: 90

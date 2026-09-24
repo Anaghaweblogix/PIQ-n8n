@@ -97,6 +97,33 @@ jobs:
 
     steps:
 
+      # ============================================================
+      # 0. TRUST THE RUNNER WORKSPACE
+      #
+      # The self-hosted runner checks out as one account and runs
+      # steps as another, so git refuses to read the repository
+      # until the workspace is marked safe.
+      # ============================================================
+
+      - name: Trust runner workspace
+        shell: powershell
+        run: |
+
+          $workspace = "$env:GITHUB_WORKSPACE" -replace '\\', '/'
+
+          Write-Host "Marking workspace as safe: $workspace"
+
+
+          $existing = @(git config --global --get-all safe.directory 2>$null)
+
+
+          if ($existing -notcontains $workspace) {
+
+              git config --global --add safe.directory "$workspace"
+          }
+
+
+          git config --global --get-all safe.directory
 
       # ============================================================
       # 1. CHECKOUT REPOSITORY
